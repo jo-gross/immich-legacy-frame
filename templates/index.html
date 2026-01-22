@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Immich Slideshow</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background-color: #000;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+        }
+        
+        #slideshow-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .slide {
+            display: block;
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            opacity: 1;
+            transition: opacity 0.5s ease-in-out;
+        }
+        
+        .slide.active {
+            display: block;
+        }
+        
+        .slide.fade-in {
+            animation: fadeIn 1s ease-in;
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+            to {
+                opacity: 1;
+            }
+        }
+        
+        #loading {
+            color: #fff;
+            font-size: 24px;
+            text-align: center;
+        }
+        
+        #error {
+            color: #ff0000;
+            font-size: 18px;
+            text-align: center;
+            padding: 20px;
+        }
+    </style>
+</head>
+<body>
+    <div id="slideshow-container">
+        <div id="loading">Lade Bilder...</div>
+        <div id="error" style="display: none;"></div>
+    </div>
+    
+    <script>
+        // Altbrowser-kompatible Implementierung
+        (function() {
+            'use strict';
+            
+            var container = document.getElementById('slideshow-container');
+            var loading = document.getElementById('loading');
+            var errorDiv = document.getElementById('error');
+            var interval = {{ interval }};
+            var slideInterval = null;
+            var currentImage = null;
+            
+            // Hole Passwort aus URL falls vorhanden (altbrowser-kompatibel)
+            function getQueryParam(name) {
+                var url = window.location.search.substring(1);
+                var params = url.split('&');
+                for (var i = 0; i < params.length; i++) {
+                    var pair = params[i].split('=');
+                    if (pair[0] === name) {
+                        return decodeURIComponent(pair[1] || '');
+                    }
+                }
+                return null;
+            }
+            
+            // Lade ein zufälliges Bild
+            function loadRandomImage(showLoading) {
+                // Zeige Loading nur beim ersten Laden oder wenn explizit gewünscht
+                if (showLoading !== false && !currentImage) {
+                    loading.style.display = 'block';
+                    loading.textContent = 'Lade Bild...';
+                }
+                
+                var password = getQueryParam('password');
+                var url = '/api/random-image';
+                if (password) {
+                    url += '?password=' + encodeURIComponent(password);
+                }
+                
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState === 4) {
+                        if (xhr.status === 200) {
+                            try {
+                                var data = JSON.parse(xhr.responseText);
+                                if (data.id && data.url) {
+                                    displayImage(data.id, data.url, showLoading);
+                                } else {
+                                    showError('Ungültige Bilddaten erhalten');
+                                }
+                            } catch (e) {
+                                showError('Fehler beim Parsen der Antwort: ' + e.message);
+                            }
+                        } else if (xhr.status === 401) {
+                            showError('Ungültiges Passwort oder nicht autorisiert');
+                        } else {
+                            var errorMsg = 'Fehler beim Laden des Bildes: ' + xhr.status;
+                            try {
+                                var errorData = JSON.parse(xhr.responseText);
+                                if (errorData.error) {
+                                    errorMsg += ' - ' + errorData.error;
+                                }
+                            } catch (e) {
+                                errorMsg += ' - ' + xhr.responseText.substring(0, 100);
+                            }
+                            showError(errorMsg);
+                        }
+                    }
+                };
+                xhr.onerror = function() {
+                    showError('Netzwerkfehler beim Laden des Bildes');
+                };
+                xhr.send();
+            }
+            
+            // Zeige Bild an
+            function displayImage(imageId, imageUrl, showLoading) {
+                // Erstelle neues Bild-Element
+                var img = new Image();
+                var password = getQueryParam('password');
+                
+                // Verwende Proxy-Endpoint mit Konvertierung
+                var proxyUrl = '/api/image/' + imageId + '?convert=true';
+                if (password) {
+                    proxyUrl += '&password=' + encodeURIComponent(password);
+                }
+                
+                img.onload = function() {
+                    // Verstecke Loading nur wenn es angezeigt wurde
+                    if (showLoading !== false || !currentImage) {
+                        loading.style.display = 'none';
+                    }
+                    
+                    // Zeige neues Bild
+                    img.className = 'slide active';
+                    
+                    if (!currentImage) {
+                        // Erstes Bild: fade-in
+                        img.classList.add('fade-in');
+                        container.appendChild(img);
+                        currentImage = img;
+                        
+                        setTimeout(function() {
+                            if (img) {
+                                img.classList.remove('fade-in');
+                            }
+                        }, 1000);
+                    } else {
+                        // Beim Wechsel: Fade-out altes, dann neues anzeigen
+                        currentImage.style.opacity = '0';
+                        
+                        setTimeout(function() {
+                            // Entferne altes Bild
+                            if (currentImage && currentImage.parentNode) {
+                                container.removeChild(currentImage);
+                            }
+                            
+                            // Zeige neues Bild
+                            img.style.opacity = '0';
+                            container.appendChild(img);
+                            currentImage = img;
+                            
+                            // Fade-in neues Bild
+                            setTimeout(function() {
+                                if (img) {
+                                    img.style.opacity = '1';
+                                }
+                            }, 10);
+                        }, 500);
+                    }
+                    
+                    // Starte Timer für nächstes Bild
+                    if (slideInterval) {
+                        clearTimeout(slideInterval);
+                    }
+                    slideInterval = setTimeout(function() {
+                        loadRandomImage(false); // Kein Loading beim Wechsel
+                    }, interval * 1000);
+                };
+                
+                img.onerror = function() {
+                    if (showLoading !== false || !currentImage) {
+                        loading.style.display = 'none';
+                    }
+                    showError('Fehler beim Laden des Bildes');
+                };
+                
+                img.src = proxyUrl;
+            }
+            
+            // Zeige Fehler
+            function showError(message) {
+                loading.style.display = 'none';
+                errorDiv.textContent = message;
+                errorDiv.style.display = 'block';
+                
+                // Versuche nach 5 Sekunden erneut
+                setTimeout(function() {
+                    errorDiv.style.display = 'none';
+                    loadRandomImage();
+                }, 5000);
+            }
+            
+            // Starte beim Laden der Seite
+            loadRandomImage();
+        })();
+    </script>
+</body>
+</html>
+
