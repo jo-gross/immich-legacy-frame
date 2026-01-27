@@ -7,15 +7,22 @@ from PIL import Image
 
 app = Flask(__name__)
 
-# Umgebungsvariablen
-IMMICH_URL = os.getenv('IMMICH_URL', '').rstrip('/')
-IMMICH_API_KEY = os.getenv('IMMICH_API_KEY', '')
+# Umgebungsvariablen (Standard-Werte)
+DEFAULT_IMMICH_URL = os.getenv('IMMICH_URL', '').rstrip('/')
+DEFAULT_IMMICH_API_KEY = os.getenv('IMMICH_API_KEY', '')
 PASSWORD = os.getenv('PASSWORD', '')
 
 # Globaler Cache für Asset IDs und Alben
 asset_ids_cache = []
 albums_cache = []
 cache_loaded = False
+
+
+def get_immich_config():
+    """Gibt Immich URL und API Key zurück, Query-Parameter überschreiben Umgebungsvariablen"""
+    immich_url = request.args.get('immich_url', DEFAULT_IMMICH_URL).rstrip('/')
+    immich_api_key = request.args.get('immich_api_key', DEFAULT_IMMICH_API_KEY)
+    return immich_url, immich_api_key
 
 
 def check_password():
@@ -27,19 +34,25 @@ def check_password():
     return provided_password == PASSWORD
 
 
-def load_asset_ids():
+def load_asset_ids(immich_url=None, immich_api_key=None):
     """Lädt alle Asset IDs von Immich und cached sie mit Album-Zuordnung"""
     global asset_ids_cache, albums_cache, cache_loaded
+    
+    # Verwende übergebene Parameter oder Defaults
+    if immich_url is None:
+        immich_url = DEFAULT_IMMICH_URL
+    if immich_api_key is None:
+        immich_api_key = DEFAULT_IMMICH_API_KEY
     
     if cache_loaded:
         return asset_ids_cache
     
-    if not IMMICH_URL or not IMMICH_API_KEY:
+    if not immich_url or not immich_api_key:
         app.logger.error('Immich configuration missing, cannot load assets')
         return []
     
     headers = {
-        'x-api-key': IMMICH_API_KEY
+        'x-api-key': immich_api_key
     }
     
     # Dictionary: album_id -> [asset_ids]
@@ -50,9 +63,9 @@ def load_asset_ids():
     
     try:
         # Schritt 1: Lade alle Alben
-        app.logger.info(f'Loading asset IDs from Immich: {IMMICH_URL}/api/albums')
+        app.logger.info(f'Loading asset IDs from Immich: {immich_url}/api/albums')
         albums_response = requests.get(
-            f'{IMMICH_URL}/api/albums',
+            f'{immich_url}/api/albums',
             headers=headers,
             timeout=30
         )
@@ -87,7 +100,7 @@ def load_asset_ids():
                 # Falls nicht, hole das Album-Detail
                 if not album_assets:
                     album_detail_response = requests.get(
-                        f'{IMMICH_URL}/api/albums/{album_id}',
+                        f'{immich_url}/api/albums/{album_id}',
                         headers=headers,
                         timeout=10
                     )
@@ -161,13 +174,15 @@ def index():
 @app.route('/api/debug')
 def debug():
     """Debug-Endpoint zum Prüfen der Konfiguration"""
+    immich_url, immich_api_key = get_immich_config()
     debug_info = {
-        'immich_url_set': bool(IMMICH_URL),
-        'immich_url': IMMICH_URL if IMMICH_URL else 'NOT SET',
-        'api_key_set': bool(IMMICH_API_KEY),
+        'immich_url_set': bool(immich_url),
+        'immich_url': immich_url if immich_url else 'NOT SET',
+        'api_key_set': bool(immich_api_key),
         'password_set': bool(PASSWORD),
         'password_provided': bool(request.args.get('password')),
-        'password_match': check_password() if PASSWORD else 'N/A (no password required)'
+        'password_match': check_password() if PASSWORD else 'N/A (no password required)',
+        'using_query_params': bool(request.args.get('immich_url') or request.args.get('immich_api_key'))
     }
     return jsonify(debug_info)
 
@@ -178,8 +193,10 @@ def get_albums():
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
+    immich_url, immich_api_key = get_immich_config()
+    
     # Stelle sicher, dass Cache geladen ist
-    ensure_cache_loaded()
+    ensure_cache_loaded(immich_url, immich_api_key)
     
     return jsonify({'albums': albums_cache})
 
@@ -190,8 +207,10 @@ def get_random_image():
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
+    immich_url, immich_api_key = get_immich_config()
+    
     # Stelle sicher, dass Cache geladen ist
-    ensure_cache_loaded()
+    ensure_cache_loaded(immich_url, immich_api_key)
     
     # Hole ausgewählte Alben aus Query-Parameter
     selected_albums = request.args.get('albums', '')
@@ -201,16 +220,21 @@ def get_random_image():
         # Standard: Alle Alben
         selected_album_ids = [album['id'] for album in albums_cache]
     
-    # Sammle Asset IDs aus ausgewählten Alben
-    available_asset_ids = []
+    # Sammle Asset IDs aus ausgewählten Alben mit Album-Zuordnung
+    available_assets = []  # Liste von {'id': asset_id, 'album_id': album_id, 'album_name': album_name}
+    asset_ids_seen = set()
     headers = {
-        'x-api-key': IMMICH_API_KEY
+        'x-api-key': immich_api_key
     }
     
+    # Erstelle Album-ID zu Name Mapping
+    album_id_to_name = {album['id']: album['name'] for album in albums_cache}
+    
     for album_id in selected_album_ids:
+        album_name = album_id_to_name.get(album_id, 'Unbenannt')
         try:
             album_detail_response = requests.get(
-                f'{IMMICH_URL}/api/albums/{album_id}',
+                f'{immich_url}/api/albums/{album_id}',
                 headers=headers,
                 timeout=10
             )
@@ -235,36 +259,66 @@ def get_random_image():
                         elif not asset_type:
                             is_image = True
                         
-                        if is_image and asset_id not in available_asset_ids:
-                            available_asset_ids.append(asset_id)
+                        if is_image and asset_id not in asset_ids_seen:
+                            available_assets.append({
+                                'id': asset_id,
+                                'album_id': album_id,
+                                'album_name': album_name
+                            })
+                            asset_ids_seen.add(asset_id)
         except Exception:
             continue
     
-    if not available_asset_ids:
+    if not available_assets:
         return jsonify({'error': 'No images available in selected albums'}), 404
     
     # Wähle zufälliges Asset
-    random_asset_id = random.choice(available_asset_ids)
+    random_asset = random.choice(available_assets)
+    random_asset_id = random_asset['id']
+    album_name = random_asset['album_name']
     
-    # Hole Asset-Details für Datum
+    # Hole Asset-Details für Datum und Location
+    date_taken = None
+    location = None
     try:
         asset_response = requests.get(
-            f'{IMMICH_URL}/api/assets/{random_asset_id}',
+            f'{immich_url}/api/assets/{random_asset_id}',
             headers=headers,
             timeout=10
         )
-        asset_data = asset_response.json() if asset_response.status_code == 200 else {}
-        date_taken = asset_data.get('exifInfo', {}).get('dateTimeOriginal') or asset_data.get('createdAt') or asset_data.get('fileCreatedAt')
+        if asset_response.status_code == 200:
+            asset_data = asset_response.json()
+            date_taken = asset_data.get('exifInfo', {}).get('dateTimeOriginal') or asset_data.get('createdAt') or asset_data.get('fileCreatedAt')
+            
+            # Hole Location aus EXIF-Daten
+            exif_info = asset_data.get('exifInfo', {})
+            city = exif_info.get('city', '')
+            state = exif_info.get('state', '')
+            country = exif_info.get('country', '')
+            
+            # Baue Location-String zusammen
+            location_parts = []
+            if city:
+                location_parts.append(city)
+            if state and state != city:
+                location_parts.append(state)
+            if country:
+                location_parts.append(country)
+            
+            if location_parts:
+                location = ', '.join(location_parts)
     except Exception:
-        date_taken = None
+        pass
     
     # Erstelle URLs
-    image_url = f"{IMMICH_URL}/api/assets/{random_asset_id}/original"
+    image_url = f"{immich_url}/api/assets/{random_asset_id}/thumbnail?size=preview"
     
     return jsonify({
         'id': random_asset_id,
         'url': image_url,
-        'date': date_taken
+        'date': date_taken,
+        'album': album_name,
+        'location': location
     })
 
 
@@ -274,12 +328,14 @@ def get_images():
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
-    if not IMMICH_URL or not IMMICH_API_KEY:
+    immich_url, immich_api_key = get_immich_config()
+    
+    if not immich_url or not immich_api_key:
         return jsonify({'error': 'Immich configuration missing'}), 500
     
     try:
         headers = {
-            'x-api-key': IMMICH_API_KEY
+            'x-api-key': immich_api_key
         }
         
         # Hole alle Assets von Immich über Alben
@@ -289,15 +345,15 @@ def get_images():
         
         try:
             # Schritt 1: Lade alle Alben
-            app.logger.info(f'Fetching albums from Immich: {IMMICH_URL}/api/albums')
+            app.logger.info(f'Fetching albums from Immich: {immich_url}/api/albums')
             albums_response = requests.get(
-                f'{IMMICH_URL}/api/albums',
+                f'{immich_url}/api/albums',
                 headers=headers,
                 timeout=10
             )
             
             if albums_response.status_code != 200:
-                error_msg = f'{IMMICH_URL}/api/albums returned {albums_response.status_code}'
+                error_msg = f'{immich_url}/api/albums returned {albums_response.status_code}'
                 try:
                     error_data = albums_response.json()
                     if isinstance(error_data, dict) and 'message' in error_data:
@@ -305,7 +361,7 @@ def get_images():
                 except Exception:
                     error_msg += f" - {albums_response.text[:200]}"
                 
-                app.logger.error(f'Immich API error: {IMMICH_URL}/api/albums - {error_msg}')
+                app.logger.error(f'Immich API error: {immich_url}/api/albums - {error_msg}')
                 return jsonify({'error': error_msg}), 500
             
             albums_data = albums_response.json()
@@ -329,7 +385,7 @@ def get_images():
                     # Falls nicht, hole das Album-Detail
                     if not album_assets:
                         album_detail_response = requests.get(
-                            f'{IMMICH_URL}/api/albums/{album_id}',
+                            f'{immich_url}/api/albums/{album_id}',
                             headers=headers,
                             timeout=10
                         )
@@ -354,7 +410,7 @@ def get_images():
                             if asset not in asset_ids_seen:
                                 try:
                                     asset_detail_response = requests.get(
-                                        f'{IMMICH_URL}/api/assets/{asset}',
+                                        f'{immich_url}/api/assets/{asset}',
                                         headers=headers,
                                         timeout=10
                                     )
@@ -397,9 +453,9 @@ def get_images():
             if is_image and asset_id:
                 # Verwende korrekte Immich API-Endpunkte
                 # GET /api/assets/{id}/thumbnail - für Thumbnails (singular "asset")
-                # GET /api/assets/{id}/original - für Originaldateien (singular "asset")
-                thumbnail_url = f"{IMMICH_URL}/api/assets/{asset_id}/thumbnail"
-                file_url = f"{IMMICH_URL}/api/assets/{asset_id}/original"
+                # GET /api/assets/{id}/thumbnail?size=preview& - für Konvertierte Bilder (singular "asset")
+                thumbnail_url = f"{immich_url}/api/assets/{asset_id}/thumbnail"
+                file_url = f"{immich_url}/api/assets/{asset_id}/thumbnail?size=preview"
                 
                 images.append({
                     'id': asset_id,
@@ -434,18 +490,20 @@ def get_image(image_id):
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
-    if not IMMICH_URL or not IMMICH_API_KEY:
+    immich_url, immich_api_key = get_immich_config()
+    
+    if not immich_url or not immich_api_key:
         return jsonify({'error': 'Immich configuration missing'}), 500
     
     try:
         headers = {
-            'x-api-key': IMMICH_API_KEY
+            'x-api-key': immich_api_key
         }
         
         # Hole das Bild von Immich
         # Verwende korrekten Immich API-Endpunkt
-        # GET /api/assets/{id}/original - für Originaldateien (singular "asset")
-        image_url = f'{IMMICH_URL}/api/assets/{image_id}/original'
+        # GET /api/assets/{id}/thumbnail?size=preview - für Konvertierte Bilder (singular "asset")
+        image_url = f'{immich_url}/api/assets/{image_id}/thumbnail?size=preview'
         
         try:
             response = requests.get(image_url, headers=headers, timeout=30)
@@ -541,11 +599,17 @@ def get_image(image_id):
 
 
 # Lade Asset IDs beim ersten Request (lazy loading)
-def ensure_cache_loaded():
+def ensure_cache_loaded(immich_url=None, immich_api_key=None):
     """Stellt sicher, dass der Cache geladen ist"""
-    if not cache_loaded and IMMICH_URL and IMMICH_API_KEY:
+    # Verwende übergebene Parameter oder Defaults
+    if immich_url is None:
+        immich_url = DEFAULT_IMMICH_URL
+    if immich_api_key is None:
+        immich_api_key = DEFAULT_IMMICH_API_KEY
+    
+    if not cache_loaded and immich_url and immich_api_key:
         app.logger.info('Loading asset cache on first request...')
-        load_asset_ids()
+        load_asset_ids(immich_url, immich_api_key)
 
 
 if __name__ == '__main__':

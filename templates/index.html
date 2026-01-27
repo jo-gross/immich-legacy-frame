@@ -85,6 +85,123 @@
             padding: 10px 15px;
             border-radius: 5px;
             display: none;
+            text-align: right;
+        }
+
+        #date-overlay .photo-date {
+            display: inline-block;
+            line-height: 1.4;
+            white-space: nowrap;
+        }
+
+        #date-overlay .album-name {
+            display: block;
+            font-size: 14px;
+            margin-top: 5px;
+            opacity: 0.9;
+            line-height: 1.3;
+            white-space: nowrap;
+        }
+
+        #date-overlay .location {
+            display: block;
+            font-size: 13px;
+            margin-top: 5px;
+            opacity: 0.85;
+            line-height: 1.3;
+            white-space: nowrap;
+        }
+
+        #current-time-overlay {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            color: #fff;
+            font-size: 24px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 15px 20px;
+            border-radius: 5px;
+            display: none;
+            font-weight: bold;
+        }
+
+        #overlay-selector {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 5px;
+            max-width: 300px;
+            display: none;
+            z-index: 1000;
+        }
+
+        #overlay-selector h3 {
+            color: #fff;
+            margin-bottom: 10px;
+            font-size: 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .overlay-item {
+            color: #fff;
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .overlay-item input[type="checkbox"] {
+            margin-right: 10px;
+            width: 18px;
+            height: 18px;
+        }
+
+        .overlay-item label {
+            cursor: pointer;
+            flex: 1;
+        }
+
+        #overlay-close {
+            background: none;
+            border: none;
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            line-height: 30px;
+            text-align: center;
+        }
+
+        #overlay-close:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+
+        #overlay-toggle {
+            position: fixed;
+            top: 20px;
+            right: 90px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            z-index: 999;
+            display: none;
+        }
+
+        @media (max-width: 600px) {
+            #overlay-toggle {
+                right: 20px;
+                top: 70px;
+            }
         }
         
         #album-selector {
@@ -204,6 +321,8 @@
     </div>
     
     <button id="album-toggle" style="display: none;">Alben</button>
+    <button id="overlay-toggle" style="display: none;">Overlays</button>
+
     <div id="album-selector">
         <h3>
             <span>Alben auswählen</span>
@@ -216,7 +335,27 @@
         <div id="album-list"></div>
     </div>
     
+    <div id="overlay-selector">
+        <h3>
+            <span>Overlay-Optionen</span>
+            <button id="overlay-close" title="Schließen">×</button>
+        </h3>
+        <div class="overlay-item">
+            <input type="checkbox" id="show-photo-date" checked>
+            <label for="show-photo-date">Aufnahmedatum anzeigen</label>
+        </div>
+        <div class="overlay-item">
+            <input type="checkbox" id="show-current-time" checked>
+            <label for="show-current-time">Aktuelle Uhrzeit anzeigen</label>
+        </div>
+        <div class="overlay-item">
+            <input type="checkbox" id="show-album-name" checked>
+            <label for="show-album-name">Album anzeigen</label>
+        </div>
+    </div>
+
     <div id="date-overlay"></div>
+    <div id="current-time-overlay"></div>
     <div id="pause-overlay">⏸</div>
     
     <script>
@@ -228,16 +367,26 @@
             var loading = document.getElementById('loading');
             var errorDiv = document.getElementById('error');
             var dateOverlay = document.getElementById('date-overlay');
+            var currentTimeOverlay = document.getElementById('current-time-overlay');
             var albumSelector = document.getElementById('album-selector');
             var albumToggle = document.getElementById('album-toggle');
+            var overlaySelector = document.getElementById('overlay-selector');
+            var overlayToggle = document.getElementById('overlay-toggle');
             var pauseOverlay = document.getElementById('pause-overlay');
             var interval = {{ interval }};
             var slideInterval = null;
+            var timeInterval = null;
             var currentImage = null;
             var isPaused = false;
             var selectedAlbums = []; // Leer = alle Alben
             var albums = [];
-            
+            var showPhotoDate = true;
+            var showCurrentTime = true;
+            var showAlbumName = true;
+            var currentAlbumName = '';
+            var currentLocation = '';
+            var currentPhotoDate = '';
+
             // Hole Passwort aus URL falls vorhanden (altbrowser-kompatibel)
             function getQueryParam(name) {
                 var url = window.location.search.substring(1);
@@ -255,10 +404,15 @@
             function loadAlbums() {
                 var password = getQueryParam('password');
                 var url = '/api/albums';
+                var hasQuery = false;
                 if (password) {
                     url += '?password=' + encodeURIComponent(password);
+                    hasQuery = true;
                 }
                 
+                // Füge Immich-Parameter hinzu (URL + API-Key)
+                url = appendImmichParams(url);
+
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', url, true);
                 xhr.onreadystatechange = function() {
@@ -343,17 +497,84 @@
             albumToggle.onclick = function() {
                 if (albumSelector.style.display === 'none' || !albumSelector.style.display) {
                     albumSelector.style.display = 'block';
+                    overlaySelector.style.display = 'none'; // Schließe Overlay-Auswahl
                 } else {
                     albumSelector.style.display = 'none';
                 }
             };
             
+            // Toggle Overlay-Auswahl
+            overlayToggle.onclick = function() {
+                if (overlaySelector.style.display === 'none' || !overlaySelector.style.display) {
+                    overlaySelector.style.display = 'block';
+                    albumSelector.style.display = 'none'; // Schließe Album-Auswahl
+                } else {
+                    overlaySelector.style.display = 'none';
+                }
+            };
+
             // Schließe Album-Auswahl
             var albumClose = document.getElementById('album-close');
             albumClose.onclick = function() {
                 albumSelector.style.display = 'none';
             };
             
+            // Schließe Overlay-Auswahl
+            var overlayClose = document.getElementById('overlay-close');
+            overlayClose.onclick = function() {
+                overlaySelector.style.display = 'none';
+            };
+
+            // Overlay-Optionen
+            var showPhotoDateCheckbox = document.getElementById('show-photo-date');
+            var showCurrentTimeCheckbox = document.getElementById('show-current-time');
+            var showAlbumNameCheckbox = document.getElementById('show-album-name');
+
+            // Aktualisiere Datum-Overlay basierend auf aktuellen Einstellungen
+            function updateDateOverlay() {
+                // Verwende globale Variable für das Datum
+                var formattedDate = formatDate(currentPhotoDate);
+                var hasDate = formattedDate && showPhotoDate;
+                var hasAlbum = currentAlbumName && showAlbumName;
+                var hasLocation = currentLocation && showAlbumName; // Zeige Location nur wenn Album angezeigt wird
+
+                if (hasDate || hasAlbum || hasLocation) {
+                    var overlayContent = '';
+
+                    if (hasDate) {
+                        overlayContent += '<span class="photo-date">📷 ' + formattedDate + '</span>';
+                    }
+
+                    if (hasAlbum) {
+                        overlayContent += '<span class="album-name">' + currentAlbumName + '</span>';
+                    }
+
+                    if (hasLocation) {
+                        overlayContent += '<span class="location">📍 ' + currentLocation + '</span>';
+                    }
+
+                    dateOverlay.innerHTML = overlayContent;
+                    dateOverlay.style.display = 'block';
+                } else {
+                    dateOverlay.style.display = 'none';
+                }
+            }
+
+            showPhotoDateCheckbox.onchange = function() {
+                showPhotoDate = showPhotoDateCheckbox.checked;
+                updateDateOverlay();
+            };
+
+            showCurrentTimeCheckbox.onchange = function() {
+                showCurrentTime = showCurrentTimeCheckbox.checked;
+                updateCurrentTime();
+            };
+
+            showAlbumNameCheckbox.onchange = function() {
+                showAlbumName = showAlbumNameCheckbox.checked;
+                updateDateOverlay();
+            };
+
             // Alle auswählen / Keins auswählen Buttons
             var selectAllBtn = document.getElementById('select-all-albums');
             var deselectAllBtn = document.getElementById('deselect-all-albums');
@@ -366,12 +587,43 @@
                 deselectAllAlbums();
             };
             
+            // Aktualisiere aktuelle Uhrzeit
+            function updateCurrentTime() {
+                if (!showCurrentTime) {
+                    currentTimeOverlay.style.display = 'none';
+                    return;
+                }
+
+                var now = new Date();
+                var hours = now.getHours();
+                var minutes = now.getMinutes();
+                var day = now.getDate();
+                var month = now.getMonth() + 1;
+                var year = now.getFullYear();
+
+                var timeStr = (hours < 10 ? '0' : '') + hours + ':' + (minutes < 10 ? '0' : '') + minutes;
+                var dateStr = day + '.' + (month < 10 ? '0' : '') + month + '.' + year;
+
+                currentTimeOverlay.textContent = timeStr + ' | ' + dateStr;
+                currentTimeOverlay.style.display = 'block';
+            }
+
+            // Starte Uhrzeit-Update
+            function startTimeUpdate() {
+                updateCurrentTime();
+                if (timeInterval) {
+                    clearInterval(timeInterval);
+                }
+                timeInterval = setInterval(updateCurrentTime, 1000);
+            }
+
             // Pause/Play Funktion
             function togglePause() {
                 isPaused = !isPaused;
                 if (isPaused) {
                     pauseOverlay.style.display = 'block';
                     albumToggle.style.display = 'block'; // Zeige Album-Button bei Pause
+                    overlayToggle.style.display = 'block'; // Zeige Overlay-Button bei Pause
                     if (slideInterval) {
                         clearTimeout(slideInterval);
                         slideInterval = null;
@@ -379,7 +631,9 @@
                 } else {
                     pauseOverlay.style.display = 'none';
                     albumToggle.style.display = 'none'; // Verstecke Album-Button bei Play
+                    overlayToggle.style.display = 'none'; // Verstecke Overlay-Button bei Play
                     albumSelector.style.display = 'none'; // Schließe Album-Auswahl
+                    overlaySelector.style.display = 'none'; // Schließe Overlay-Auswahl
                     // Starte Timer neu
                     if (slideInterval) {
                         clearTimeout(slideInterval);
@@ -398,6 +652,23 @@
                 }
             };
             
+            // Hilfsfunktion: hänge Immich-Parameter an eine URL an
+            function appendImmichParams(url) {
+                var immichUrlParam = getQueryParam('immich_url');
+                var immichApiKeyParam = getQueryParam('immich_api_key');
+
+                var hasQuery = url.indexOf('?') !== -1;
+                if (immichUrlParam) {
+                    url += (hasQuery ? '&' : '?') + 'immich_url=' + encodeURIComponent(immichUrlParam);
+                    hasQuery = true;
+                }
+                if (immichApiKeyParam) {
+                    url += (hasQuery ? '&' : '?') + 'immich_api_key=' + encodeURIComponent(immichApiKeyParam);
+                    hasQuery = true;
+                }
+                return url;
+            }
+
             // Lade ein zufälliges Bild
             function loadRandomImage(showLoading) {
                 if (isPaused) {
@@ -412,15 +683,21 @@
                 
                 var password = getQueryParam('password');
                 var url = '/api/random-image';
+                var hasQuery = false;
                 if (password) {
                     url += '?password=' + encodeURIComponent(password);
+                    hasQuery = true;
                 }
                 
                 // Füge Album-Filter hinzu
                 if (selectedAlbums.length > 0) {
-                    url += (password ? '&' : '?') + 'albums=' + selectedAlbums.join(',');
+                    url += (hasQuery ? '&' : '?') + 'albums=' + selectedAlbums.join(',');
+                    hasQuery = true;
                 }
                 
+                // Füge Immich-Parameter hinzu (URL + API-Key)
+                url = appendImmichParams(url);
+
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', url, true);
                 xhr.onreadystatechange = function() {
@@ -429,7 +706,7 @@
                             try {
                                 var data = JSON.parse(xhr.responseText);
                                 if (data.id && data.url) {
-                                    displayImage(data.id, data.url, data.date, showLoading);
+                                    displayImage(data.id, data.url, data.date, data.album, data.location, showLoading);
                                 } else {
                                     showError('Ungültige Bilddaten erhalten');
                                 }
@@ -461,19 +738,29 @@
             // Formatiere Datum
             function formatDate(dateString) {
                 if (!dateString) return '';
+
+                // Prüfe ob Datum bereits im Format dd.MM.yyyy ist
+                if (/^\d{2}\.\d{2}\.\d{4}$/.test(dateString)) {
+                    return dateString;
+                }
+
                 try {
                     var date = new Date(dateString);
+                    // Prüfe ob Datum gültig ist
+                    if (isNaN(date.getTime())) {
+                        return '';
+                    }
                     var day = date.getDate();
                     var month = date.getMonth() + 1;
                     var year = date.getFullYear();
-                    return day + '.' + (month < 10 ? '0' : '') + month + '.' + year;
+                    return (day < 10 ? '0' : '') + day + '.' + (month < 10 ? '0' : '') + month + '.' + year;
                 } catch (e) {
                     return '';
                 }
             }
             
             // Zeige Bild an
-            function displayImage(imageId, imageUrl, dateString, showLoading) {
+            function displayImage(imageId, imageUrl, dateString, albumName, location, showLoading) {
                 // Erstelle neues Bild-Element
                 var img = new Image();
                 var password = getQueryParam('password');
@@ -484,20 +771,38 @@
                     proxyUrl += '&password=' + encodeURIComponent(password);
                 }
                 
+                // Füge Immich-Parameter hinzu (URL + API-Key)
+                proxyUrl = appendImmichParams(proxyUrl);
+
                 img.onload = function() {
+                    var isFirstImage = !currentImage;
+                    
                     // Verstecke Loading nur wenn es angezeigt wurde
-                    if (showLoading !== false || !currentImage) {
+                    if (showLoading !== false || isFirstImage) {
                         loading.style.display = 'none';
                     }
                     
+                    // Speichere Metadaten im Bild-Element
+                    img.setAttribute('data-date', dateString || '');
+                    img.setAttribute('data-album', albumName || '');
+                    img.setAttribute('data-location', location || '');
+
+                    // Aktualisiere globale Variablen
+                    currentAlbumName = albumName || '';
+                    currentLocation = location || '';
+                    currentPhotoDate = dateString || '';
+
                     // Zeige neues Bild
                     img.className = 'slide active';
                     
-                    if (!currentImage) {
+                    if (isFirstImage) {
                         // Erstes Bild: fade-in
                         img.classList.add('fade-in');
                         container.appendChild(img);
                         currentImage = img;
+                        
+                        // Aktualisiere Overlays NACH dem Setzen von currentImage
+                        updateDateOverlay();
                         
                         setTimeout(function() {
                             if (img) {
@@ -507,6 +812,9 @@
                     } else {
                         // Beim Wechsel: Fade-out altes, dann neues anzeigen
                         currentImage.style.opacity = '0';
+                        
+                        // Aktualisiere Overlays sofort (vor der Animation)
+                        updateDateOverlay();
                         
                         setTimeout(function() {
                             // Entferne altes Bild
@@ -527,16 +835,7 @@
                             }, 10);
                         }, 500);
                     }
-                    
-                    // Zeige Datum
-                    var formattedDate = formatDate(dateString);
-                    if (formattedDate) {
-                        dateOverlay.textContent = formattedDate;
-                        dateOverlay.style.display = 'block';
-                    } else {
-                        dateOverlay.style.display = 'none';
-                    }
-                    
+
                     // Starte Timer für nächstes Bild (nur wenn nicht pausiert)
                     if (!isPaused) {
                         if (slideInterval) {
@@ -573,6 +872,7 @@
             
             // Starte beim Laden der Seite
             loadAlbums();
+            startTimeUpdate();
             loadRandomImage();
         })();
     </script>
