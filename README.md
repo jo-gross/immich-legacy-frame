@@ -11,6 +11,8 @@
 
 </div>
 
+Before using this application, you may have a look on [Immich-Kiosk](https://github.com/damongolding/immich-kiosk) before.
+
 ---
 
 ## Features
