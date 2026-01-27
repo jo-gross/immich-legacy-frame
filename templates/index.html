@@ -30,8 +30,8 @@
         
         .slide {
             display: block;
-            max-width: 100%;
-            max-height: 100%;
+            width: 100%;
+            height: 100%;
             object-fit: contain;
             opacity: 1;
             transition: opacity 0.5s ease-in-out;
@@ -162,6 +162,34 @@
         .overlay-item label {
             cursor: pointer;
             flex: 1;
+        }
+
+        .overlay-item.interval-setting {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+        }
+
+        .overlay-item.interval-setting label {
+            margin-right: 10px;
+            flex: none;
+        }
+
+        #interval-input {
+            width: 70px;
+            padding: 5px 8px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        #interval-input:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.6);
+            background-color: rgba(255, 255, 255, 0.2);
         }
 
         #overlay-close {
@@ -351,6 +379,10 @@
         <div class="overlay-item">
             <input type="checkbox" id="show-album-name" checked>
             <label for="show-album-name">Album anzeigen</label>
+        </div>
+        <div class="overlay-item interval-setting">
+            <label for="interval-input">Intervall (Sek.):</label>
+            <input type="number" id="interval-input" min="1" max="300" value="{{ interval }}">
         </div>
     </div>
 
@@ -573,6 +605,25 @@
             showAlbumNameCheckbox.onchange = function() {
                 showAlbumName = showAlbumNameCheckbox.checked;
                 updateDateOverlay();
+            };
+
+            // Intervall-Einstellung
+            var intervalInput = document.getElementById('interval-input');
+            intervalInput.onchange = function() {
+                var newInterval = parseInt(intervalInput.value, 10);
+                if (newInterval && newInterval >= 1 && newInterval <= 300) {
+                    interval = newInterval;
+                    // Starte Timer neu mit neuem Intervall (falls nicht pausiert)
+                    if (!isPaused && slideInterval) {
+                        clearTimeout(slideInterval);
+                        slideInterval = setTimeout(function() {
+                            loadRandomImage(false);
+                        }, interval * 1000);
+                    }
+                } else {
+                    // Ungültiger Wert, setze zurück
+                    intervalInput.value = interval;
+                }
             };
 
             // Alle auswählen / Keins auswählen Buttons
