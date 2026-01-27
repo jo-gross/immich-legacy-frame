@@ -1,131 +1,164 @@
+<div align="center">
+
 # Immich Slideshow
 
-Eine einfache Slideshow-Anwendung, die Bilder aus Immich lädt und anzeigt. Optimiert für alte Browser und den Einsatz in Docker.
+**A lightweight slideshow application that displays photos from your Immich library**
+
+[![Docker Build](https://github.com/jo-gross/immich-legacy-frame/actions/workflows/docker-build.yml/badge.svg)](https://github.com/jo-gross/immich-legacy-frame/actions/workflows/docker-build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+
+*Perfect for old tablets, digital photo frames, or any legacy browser*
+
+</div>
+
+---
 
 ## Features
 
-- ✅ Läuft auf alten Browsern (Vanilla JavaScript, keine modernen Features)
-- ✅ Zeigt alle Bilder aus Immich an
-- ✅ Automatische Bildkonvertierung für Kompatibilität
-- ✅ Passwort-Schutz via Umgebungsvariable
-- ✅ Docker-ready
-- ✅ Bilder werden mit schwarzem Hintergrund skaliert (contain-Modus)
-- ✅ Konfigurierbares Intervall via Query-Parameter
+- **Legacy Browser Support** — Works on Internet Explorer 11+, old Chrome, Firefox, and Safari versions
+- **Immich Integration** — Displays all photos from your Immich library
+- **Automatic Image Conversion** — Converts images for maximum compatibility
+- **Password Protection** — Optional access control via environment variable
+- **Docker Ready** — Easy deployment with Docker Compose
+- **Responsive Display** — Images scale with black letterboxing (contain mode)
+- **Configurable Interval** — Adjust slideshow timing via URL parameter
 
-## Voraussetzungen
+---
 
-- Docker und Docker Compose (oder Python 3.11+)
-- Immich-Instanz mit API-Zugriff
+## Quick Start
 
-## Installation und Start
+### Using Docker Compose (Recommended)
 
-### Mit Docker Compose
+1. **Create a `.env` file** in your project directory:
 
-1. Erstelle eine `.env` Datei im Projektverzeichnis:
+   ```env
+   IMMICH_URL=https://your-immich-instance.com
+   IMMICH_API_KEY=your-api-key
+   PASSWORD=your-password  # Optional: Leave empty to disable protection
+   ```
 
-```env
-IMMICH_URL=https://deine-immich-instanz.de
-IMMICH_API_KEY=dein-api-key
-PASSWORD=dein-passwort  # Optional: Wenn leer, kein Passwort-Schutz
-```
+2. **Start the container:**
 
-2. Starte den Container:
+   ```bash
+   docker-compose up -d
+   ```
 
-```bash
-docker-compose up -d
-```
+3. **Open in your browser:** `http://localhost:8080`
 
-3. Öffne im Browser: `http://localhost:5000`
-
-### Ohne Docker
-
-1. Installiere Abhängigkeiten:
+### Using Pre-built Image
 
 ```bash
-pip install -r requirements.txt
+docker run -d \
+  -p 8080:5000 \
+  -e IMMICH_URL=https://your-immich-instance.com \
+  -e IMMICH_API_KEY=your-api-key \
+  -e PASSWORD=your-password \
+  ghcr.io/jo-gross/immich-legacy-frame:latest
 ```
 
-2. Setze Umgebungsvariablen:
+### Without Docker
 
-```bash
-export IMMICH_URL=https://deine-immich-instanz.de
-export IMMICH_API_KEY=dein-api-key
-export PASSWORD=dein-passwort  # Optional
+1. **Install dependencies:**
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+2. **Set environment variables:**
+
+   ```bash
+   export IMMICH_URL=https://your-immich-instance.com
+   export IMMICH_API_KEY=your-api-key
+   export PASSWORD=your-password  # Optional
+   ```
+
+3. **Run the application:**
+
+   ```bash
+   python app.py
+   ```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable         | Description                                          | Required |
+|------------------|------------------------------------------------------|:--------:|
+| `IMMICH_URL`     | URL to your Immich instance (without trailing slash) |   Yes    |
+| `IMMICH_API_KEY` | API key from Immich                                  |   Yes    |
+| `PASSWORD`       | Password for access protection                       |    No    |
+
+### URL Parameters
+
+| Parameter  | Description                      | Default |
+|------------|----------------------------------|---------|
+| `password` | Authentication password          | —       |
+| `interval` | Time between slides (in seconds) | `5`     |
+
+**Examples:**
+
+```
+http://localhost:8080/
+http://localhost:8080/?interval=10
+http://localhost:8080/?password=secret&interval=15
 ```
 
-3. Starte die Anwendung:
-
-```bash
-python app.py
-```
-
-## Verwendung
-
-### Basis-URL
-
-```
-http://localhost:5000/
-```
-
-### Mit Passwort (wenn PASSWORD gesetzt ist)
-
-```
-http://localhost:5000/?password=dein-passwort
-```
-
-### Mit Intervall (Sekunden)
-
-```
-http://localhost:5000/?password=dein-passwort&interval=10
-```
-
-Standard-Intervall: 5 Sekunden
-
-## Umgebungsvariablen
-
-| Variable | Beschreibung | Erforderlich |
-|----------|-------------|--------------|
-| `IMMICH_URL` | URL zu deiner Immich-Instanz (ohne trailing slash) | Ja |
-| `IMMICH_API_KEY` | API-Key von Immich | Ja |
-| `PASSWORD` | Passwort für Zugriffsschutz (optional) | Nein |
-
-## Technologie-Stack
-
-- **Backend**: Python 3.11 + Flask
-- **Frontend**: Vanilla HTML/CSS/JavaScript (altbrowser-kompatibel)
-- **Bildverarbeitung**: Pillow (für Konvertierung)
-- **Server**: Gunicorn (Produktion)
-
-## Browser-Kompatibilität
-
-Die Anwendung ist kompatibel mit:
-- Internet Explorer 11+
-- Chrome/Edge (alte Versionen)
-- Firefox (alte Versionen)
-- Safari (alte Versionen)
-
-Verwendet keine modernen JavaScript-Features wie:
-- ES6+ Syntax (Arrow Functions, Template Literals, etc.)
-- Fetch API (verwendet XMLHttpRequest)
-- Modern CSS Features (nur Basis-Features)
+---
 
 ## API Endpoints
 
-- `GET /` - Hauptseite mit Slideshow
-- `GET /api/images` - Liste aller Bilder von Immich
-- `GET /api/image/<id>` - Einzelnes Bild (mit optionaler Konvertierung)
+| Endpoint              | Description                             |
+|-----------------------|-----------------------------------------|
+| `GET /`               | Main slideshow page                     |
+| `GET /api/images`     | List of all images from Immich          |
+| `GET /api/image/<id>` | Single image (with optional conversion) |
 
-## Entwicklung
+---
 
-Für lokale Entwicklung:
+## Tech Stack
+
+| Component         | Technology                  |
+|-------------------|-----------------------------|
+| Backend           | Python 3.11, Flask          |
+| Frontend          | Vanilla HTML/CSS/JavaScript |
+| Image Processing  | Pillow                      |
+| Production Server | Gunicorn                    |
+| Container         | Docker                      |
+
+---
+
+## Browser Compatibility
+
+Designed for legacy browsers — no modern JavaScript features used:
+
+| Feature                             | Status                         |
+|-------------------------------------|--------------------------------|
+| ES6+ Syntax (Arrow Functions, etc.) | Not used                       |
+| Fetch API                           | Not used (uses XMLHttpRequest) |
+| Modern CSS (Flexbox, Grid)          | Not used                       |
+
+**Tested on:**
+- Internet Explorer 11+
+- Chrome (legacy versions)
+- Firefox (legacy versions)
+- Safari (legacy versions)
+
+---
+
+## Development
+
+For local development with hot reload:
 
 ```bash
 python app.py
 ```
 
-Die Anwendung läuft dann im Debug-Modus auf `http://localhost:5000`.
+The application runs in debug mode at `http://localhost:5000`.
 
-## Lizenz
+---
 
-MIT
+## License
 
+This project is licensed under the [MIT License](https://opensource.org/licenses/MIT).
