@@ -65,6 +65,135 @@
             font-size: 18px;
             text-align: center;
             padding: 20px;
+            position: absolute;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            max-width: 600px;
+            background-color: rgba(0, 0, 0, 0.7);
+            border-radius: 5px;
+        }
+        
+        #date-overlay {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            color: #fff;
+            font-size: 16px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 10px 15px;
+            border-radius: 5px;
+            display: none;
+        }
+        
+        #album-selector {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 5px;
+            max-width: 300px;
+            max-height: 80vh;
+            overflow-y: auto;
+            display: none;
+            z-index: 1000;
+        }
+        
+        #album-selector h3 {
+            color: #fff;
+            margin-bottom: 10px;
+            font-size: 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        #album-close {
+            background: none;
+            border: none;
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            line-height: 30px;
+            text-align: center;
+        }
+        
+        #album-close:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+            border-radius: 3px;
+        }
+        
+        .album-item {
+            color: #fff;
+            margin: 8px 0;
+            display: flex;
+            align-items: center;
+        }
+        
+        .album-item input[type="checkbox"] {
+            margin-right: 10px;
+            width: 18px;
+            height: 18px;
+        }
+        
+        .album-item label {
+            cursor: pointer;
+            flex: 1;
+        }
+        
+        #album-toggle {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            border: none;
+            padding: 10px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            z-index: 999;
+        }
+        
+        #album-actions {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 15px;
+            margin-top: 10px;
+        }
+        
+        .album-action-btn {
+            flex: 1;
+            background-color: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            padding: 8px 12px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .album-action-btn:hover {
+            background-color: rgba(255, 255, 255, 0.3);
+        }
+        
+        #pause-overlay {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #fff;
+            font-size: 48px;
+            background-color: rgba(0, 0, 0, 0.7);
+            padding: 20px 40px;
+            border-radius: 10px;
+            display: none;
+            z-index: 1001;
         }
     </style>
 </head>
@@ -74,6 +203,22 @@
         <div id="error" style="display: none;"></div>
     </div>
     
+    <button id="album-toggle" style="display: none;">Alben</button>
+    <div id="album-selector">
+        <h3>
+            <span>Alben auswählen</span>
+            <button id="album-close" title="Schließen">×</button>
+        </h3>
+        <div id="album-actions">
+            <button class="album-action-btn" id="select-all-albums">Alle auswählen</button>
+            <button class="album-action-btn" id="deselect-all-albums">Keins auswählen</button>
+        </div>
+        <div id="album-list"></div>
+    </div>
+    
+    <div id="date-overlay"></div>
+    <div id="pause-overlay">⏸</div>
+    
     <script>
         // Altbrowser-kompatible Implementierung
         (function() {
@@ -82,9 +227,16 @@
             var container = document.getElementById('slideshow-container');
             var loading = document.getElementById('loading');
             var errorDiv = document.getElementById('error');
+            var dateOverlay = document.getElementById('date-overlay');
+            var albumSelector = document.getElementById('album-selector');
+            var albumToggle = document.getElementById('album-toggle');
+            var pauseOverlay = document.getElementById('pause-overlay');
             var interval = {{ interval }};
             var slideInterval = null;
             var currentImage = null;
+            var isPaused = false;
+            var selectedAlbums = []; // Leer = alle Alben
+            var albums = [];
             
             // Hole Passwort aus URL falls vorhanden (altbrowser-kompatibel)
             function getQueryParam(name) {
@@ -99,8 +251,159 @@
                 return null;
             }
             
+            // Lade Alben
+            function loadAlbums() {
+                var password = getQueryParam('password');
+                var url = '/api/albums';
+                if (password) {
+                    url += '?password=' + encodeURIComponent(password);
+                }
+                
+                var xhr = new XMLHttpRequest();
+                xhr.open('GET', url, true);
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState === 4 && xhr.status === 200) {
+                        try {
+                            var data = JSON.parse(xhr.responseText);
+                            albums = data.albums || [];
+                            renderAlbumSelector();
+                        } catch (e) {
+                            console.error('Error loading albums:', e);
+                        }
+                    }
+                };
+                xhr.send();
+            }
+            
+            // Rendere Album-Auswahl
+            function renderAlbumSelector() {
+                var albumList = document.getElementById('album-list');
+                albumList.innerHTML = '';
+                
+                for (var i = 0; i < albums.length; i++) {
+                    var album = albums[i];
+                    var item = document.createElement('div');
+                    item.className = 'album-item';
+                    
+                    var checkbox = document.createElement('input');
+                    checkbox.type = 'checkbox';
+                    checkbox.id = 'album-' + album.id;
+                    checkbox.checked = true; // Standard: alle ausgewählt
+                    checkbox.onchange = function(albumId) {
+                        return function() {
+                            updateSelectedAlbums();
+                        };
+                    }(album.id);
+                    
+                    var label = document.createElement('label');
+                    label.htmlFor = 'album-' + album.id;
+                    label.textContent = album.name || 'Unbenannt';
+                    
+                    item.appendChild(checkbox);
+                    item.appendChild(label);
+                    albumList.appendChild(item);
+                }
+            }
+            
+            // Aktualisiere ausgewählte Alben
+            function updateSelectedAlbums() {
+                selectedAlbums = [];
+                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
+                for (var i = 0; i < checkboxes.length; i++) {
+                    if (checkboxes[i].checked) {
+                        var albumId = checkboxes[i].id.replace('album-', '');
+                        selectedAlbums.push(albumId);
+                    }
+                }
+                // Lade neues Bild mit neuen Filtern
+                if (currentImage) {
+                    loadRandomImage(false);
+                }
+            }
+            
+            // Alle Alben auswählen
+            function selectAllAlbums() {
+                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
+                for (var i = 0; i < checkboxes.length; i++) {
+                    checkboxes[i].checked = true;
+                }
+                updateSelectedAlbums();
+            }
+            
+            // Alle Alben deselektieren
+            function deselectAllAlbums() {
+                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
+                for (var i = 0; i < checkboxes.length; i++) {
+                    checkboxes[i].checked = false;
+                }
+                updateSelectedAlbums();
+            }
+            
+            // Toggle Album-Auswahl
+            albumToggle.onclick = function() {
+                if (albumSelector.style.display === 'none' || !albumSelector.style.display) {
+                    albumSelector.style.display = 'block';
+                } else {
+                    albumSelector.style.display = 'none';
+                }
+            };
+            
+            // Schließe Album-Auswahl
+            var albumClose = document.getElementById('album-close');
+            albumClose.onclick = function() {
+                albumSelector.style.display = 'none';
+            };
+            
+            // Alle auswählen / Keins auswählen Buttons
+            var selectAllBtn = document.getElementById('select-all-albums');
+            var deselectAllBtn = document.getElementById('deselect-all-albums');
+            
+            selectAllBtn.onclick = function() {
+                selectAllAlbums();
+            };
+            
+            deselectAllBtn.onclick = function() {
+                deselectAllAlbums();
+            };
+            
+            // Pause/Play Funktion
+            function togglePause() {
+                isPaused = !isPaused;
+                if (isPaused) {
+                    pauseOverlay.style.display = 'block';
+                    albumToggle.style.display = 'block'; // Zeige Album-Button bei Pause
+                    if (slideInterval) {
+                        clearTimeout(slideInterval);
+                        slideInterval = null;
+                    }
+                } else {
+                    pauseOverlay.style.display = 'none';
+                    albumToggle.style.display = 'none'; // Verstecke Album-Button bei Play
+                    albumSelector.style.display = 'none'; // Schließe Album-Auswahl
+                    // Starte Timer neu
+                    if (slideInterval) {
+                        clearTimeout(slideInterval);
+                    }
+                    slideInterval = setTimeout(function() {
+                        loadRandomImage(false);
+                    }, interval * 1000);
+                }
+            }
+            
+            // Klick auf Bild = Pause
+            container.onclick = function(e) {
+                // Nur wenn auf das Bild selbst geklickt wird, nicht auf Container
+                if (e.target === currentImage || e.target === container) {
+                    togglePause();
+                }
+            };
+            
             // Lade ein zufälliges Bild
             function loadRandomImage(showLoading) {
+                if (isPaused) {
+                    return; // Nicht laden wenn pausiert
+                }
+                
                 // Zeige Loading nur beim ersten Laden oder wenn explizit gewünscht
                 if (showLoading !== false && !currentImage) {
                     loading.style.display = 'block';
@@ -113,6 +416,11 @@
                     url += '?password=' + encodeURIComponent(password);
                 }
                 
+                // Füge Album-Filter hinzu
+                if (selectedAlbums.length > 0) {
+                    url += (password ? '&' : '?') + 'albums=' + selectedAlbums.join(',');
+                }
+                
                 var xhr = new XMLHttpRequest();
                 xhr.open('GET', url, true);
                 xhr.onreadystatechange = function() {
@@ -121,7 +429,7 @@
                             try {
                                 var data = JSON.parse(xhr.responseText);
                                 if (data.id && data.url) {
-                                    displayImage(data.id, data.url, showLoading);
+                                    displayImage(data.id, data.url, data.date, showLoading);
                                 } else {
                                     showError('Ungültige Bilddaten erhalten');
                                 }
@@ -150,8 +458,22 @@
                 xhr.send();
             }
             
+            // Formatiere Datum
+            function formatDate(dateString) {
+                if (!dateString) return '';
+                try {
+                    var date = new Date(dateString);
+                    var day = date.getDate();
+                    var month = date.getMonth() + 1;
+                    var year = date.getFullYear();
+                    return day + '.' + (month < 10 ? '0' : '') + month + '.' + year;
+                } catch (e) {
+                    return '';
+                }
+            }
+            
             // Zeige Bild an
-            function displayImage(imageId, imageUrl, showLoading) {
+            function displayImage(imageId, imageUrl, dateString, showLoading) {
                 // Erstelle neues Bild-Element
                 var img = new Image();
                 var password = getQueryParam('password');
@@ -206,13 +528,24 @@
                         }, 500);
                     }
                     
-                    // Starte Timer für nächstes Bild
-                    if (slideInterval) {
-                        clearTimeout(slideInterval);
+                    // Zeige Datum
+                    var formattedDate = formatDate(dateString);
+                    if (formattedDate) {
+                        dateOverlay.textContent = formattedDate;
+                        dateOverlay.style.display = 'block';
+                    } else {
+                        dateOverlay.style.display = 'none';
                     }
-                    slideInterval = setTimeout(function() {
-                        loadRandomImage(false); // Kein Loading beim Wechsel
-                    }, interval * 1000);
+                    
+                    // Starte Timer für nächstes Bild (nur wenn nicht pausiert)
+                    if (!isPaused) {
+                        if (slideInterval) {
+                            clearTimeout(slideInterval);
+                        }
+                        slideInterval = setTimeout(function() {
+                            loadRandomImage(false); // Kein Loading beim Wechsel
+                        }, interval * 1000);
+                    }
                 };
                 
                 img.onerror = function() {
@@ -239,6 +572,7 @@
             }
             
             // Starte beim Laden der Seite
+            loadAlbums();
             loadRandomImage();
         })();
     </script>

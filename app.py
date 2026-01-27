@@ -12,8 +12,9 @@ IMMICH_URL = os.getenv('IMMICH_URL', '').rstrip('/')
 IMMICH_API_KEY = os.getenv('IMMICH_API_KEY', '')
 PASSWORD = os.getenv('PASSWORD', '')
 
-# Globaler Cache für Asset IDs
+# Globaler Cache für Asset IDs und Alben
 asset_ids_cache = []
+albums_cache = []
 cache_loaded = False
 
 
@@ -27,8 +28,8 @@ def check_password():
 
 
 def load_asset_ids():
-    """Lädt alle Asset IDs von Immich und cached sie"""
-    global asset_ids_cache, cache_loaded
+    """Lädt alle Asset IDs von Immich und cached sie mit Album-Zuordnung"""
+    global asset_ids_cache, albums_cache, cache_loaded
     
     if cache_loaded:
         return asset_ids_cache
@@ -41,8 +42,11 @@ def load_asset_ids():
         'x-api-key': IMMICH_API_KEY
     }
     
+    # Dictionary: album_id -> [asset_ids]
+    assets_by_album = {}
     all_asset_ids = []
     asset_ids_seen = set()
+    albums_list = []
     
     try:
         # Schritt 1: Lade alle Alben
@@ -65,8 +69,16 @@ def load_asset_ids():
         # Schritt 2: Lade Assets aus jedem Album
         for album in albums:
             album_id = album.get('id')
+            album_name = album.get('albumName', 'Unbenannt')
             if not album_id:
                 continue
+            
+            albums_list.append({
+                'id': album_id,
+                'name': album_name
+            })
+            
+            album_asset_ids = []
             
             try:
                 # Versuche zuerst, ob das Album-Objekt bereits Assets enthält
@@ -109,14 +121,18 @@ def load_asset_ids():
                         
                         if is_image:
                             all_asset_ids.append(asset_id)
+                            album_asset_ids.append(asset_id)
                             asset_ids_seen.add(asset_id)
                             
             except requests.exceptions.RequestException:
                 continue
+            
+            assets_by_album[album_id] = album_asset_ids
         
         asset_ids_cache = all_asset_ids
+        albums_cache = albums_list
         cache_loaded = True
-        app.logger.info(f'Loaded {len(asset_ids_cache)} image asset IDs into cache')
+        app.logger.info(f'Loaded {len(asset_ids_cache)} image asset IDs from {len(albums_list)} albums into cache')
         
     except Exception as e:
         app.logger.error(f'Error loading asset IDs: {str(e)}')
@@ -156,29 +172,99 @@ def debug():
     return jsonify(debug_info)
 
 
-@app.route('/api/random-image')
-def get_random_image():
-    """Gibt ein zufälliges Bild zurück"""
+@app.route('/api/albums')
+def get_albums():
+    """Gibt alle Alben zurück"""
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
     # Stelle sicher, dass Cache geladen ist
     ensure_cache_loaded()
     
-    asset_ids = asset_ids_cache
+    return jsonify({'albums': albums_cache})
+
+
+@app.route('/api/random-image')
+def get_random_image():
+    """Gibt ein zufälliges Bild zurück, optional gefiltert nach Alben"""
+    if not check_password():
+        return jsonify({'error': 'Unauthorized'}), 401
     
-    if not asset_ids:
-        return jsonify({'error': 'No images available'}), 404
+    # Stelle sicher, dass Cache geladen ist
+    ensure_cache_loaded()
+    
+    # Hole ausgewählte Alben aus Query-Parameter
+    selected_albums = request.args.get('albums', '')
+    if selected_albums:
+        selected_album_ids = [aid for aid in selected_albums.split(',') if aid]
+    else:
+        # Standard: Alle Alben
+        selected_album_ids = [album['id'] for album in albums_cache]
+    
+    # Sammle Asset IDs aus ausgewählten Alben
+    available_asset_ids = []
+    headers = {
+        'x-api-key': IMMICH_API_KEY
+    }
+    
+    for album_id in selected_album_ids:
+        try:
+            album_detail_response = requests.get(
+                f'{IMMICH_URL}/api/albums/{album_id}',
+                headers=headers,
+                timeout=10
+            )
+            if album_detail_response.status_code == 200:
+                album_detail = album_detail_response.json()
+                album_assets = album_detail.get('assets', album_detail.get('assetIds', []))
+                for asset in album_assets:
+                    asset_id = None
+                    if isinstance(asset, dict):
+                        asset_id = asset.get('id')
+                        asset_type = asset.get('type') or asset.get('mimeType', '')
+                    elif isinstance(asset, str):
+                        asset_id = asset
+                        asset_type = None
+                    
+                    if asset_id:
+                        is_image = False
+                        if asset_type == 'IMAGE':
+                            is_image = True
+                        elif isinstance(asset_type, str) and asset_type.startswith('image/'):
+                            is_image = True
+                        elif not asset_type:
+                            is_image = True
+                        
+                        if is_image and asset_id not in available_asset_ids:
+                            available_asset_ids.append(asset_id)
+        except Exception:
+            continue
+    
+    if not available_asset_ids:
+        return jsonify({'error': 'No images available in selected albums'}), 404
     
     # Wähle zufälliges Asset
-    random_asset_id = random.choice(asset_ids)
+    random_asset_id = random.choice(available_asset_ids)
+    
+    # Hole Asset-Details für Datum
+    try:
+        asset_response = requests.get(
+            f'{IMMICH_URL}/api/assets/{random_asset_id}',
+            headers=headers,
+            timeout=10
+        )
+        asset_data = asset_response.json() if asset_response.status_code == 200 else {}
+        date_taken = asset_data.get('exifInfo', {}).get('dateTimeOriginal') or asset_data.get('createdAt') or asset_data.get('fileCreatedAt')
+    except Exception:
+        date_taken = None
     
     # Erstelle URLs
     image_url = f"{IMMICH_URL}/api/assets/{random_asset_id}/original"
     
     return jsonify({
         'id': random_asset_id,
-        'url': image_url
+        'url': image_url,
+        'date': date_taken
     })
 
 
