@@ -382,6 +382,42 @@
             font-size: 12px;
             margin-bottom: 8px;
         }
+
+        .overlay-item.order-setting {
+            margin-top: 15px;
+            padding-top: 10px;
+            border-top: 1px solid rgba(255, 255, 255, 0.2);
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .overlay-item.order-setting label.order-label {
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+
+        .order-options {
+            display: flex;
+            gap: 10px;
+            width: 100%;
+        }
+
+        .order-option {
+            flex: 1;
+            display: flex;
+            align-items: center;
+        }
+
+        .order-option input[type="radio"] {
+            margin-right: 6px;
+            width: 16px;
+            height: 16px;
+        }
+
+        .order-option label {
+            cursor: pointer;
+            font-size: 13px;
+        }
         
         #pause-overlay {
             position: fixed;
@@ -452,6 +488,19 @@
             <label for="interval-input">Intervall (Sek.):</label>
             <input type="number" id="interval-input" min="1" max="300" value="{{ interval }}">
         </div>
+        <div class="overlay-item order-setting">
+            <label class="order-label">Reihenfolge:</label>
+            <div class="order-options">
+                <div class="order-option">
+                    <input type="radio" id="order-random" name="photo-order" value="random" checked>
+                    <label for="order-random">Zufällig</label>
+                </div>
+                <div class="order-option">
+                    <input type="radio" id="order-sequential" name="photo-order" value="sequential">
+                    <label for="order-sequential">Chronologisch</label>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div id="date-overlay"></div>
@@ -489,6 +538,8 @@
             var currentPhotoDate = '';
             var albumSortOrder = 'asc'; // 'asc' oder 'desc'
             var albumSearchTerm = '';
+            var photoOrder = 'random'; // 'random' oder 'sequential'
+            var sequentialIndex = 0; // Index für sequentiellen Modus
 
             // Hole Passwort aus URL falls vorhanden (altbrowser-kompatibel)
             function getQueryParam(name) {
@@ -792,6 +843,24 @@
                 }
             };
 
+            // Reihenfolge-Einstellung
+            var orderRandomRadio = document.getElementById('order-random');
+            var orderSequentialRadio = document.getElementById('order-sequential');
+
+            orderRandomRadio.onchange = function() {
+                if (orderRandomRadio.checked) {
+                    photoOrder = 'random';
+                    sequentialIndex = 0; // Reset Index
+                }
+            };
+
+            orderSequentialRadio.onchange = function() {
+                if (orderSequentialRadio.checked) {
+                    photoOrder = 'sequential';
+                    sequentialIndex = 0; // Start von vorne
+                }
+            };
+
             // Alle auswählen / Keins auswählen Buttons
             var selectAllBtn = document.getElementById('select-all-albums');
             var deselectAllBtn = document.getElementById('deselect-all-albums');
@@ -886,7 +955,7 @@
                 return url;
             }
 
-            // Lade ein zufälliges Bild
+            // Lade nächstes Bild
             function loadRandomImage(showLoading) {
                 if (isPaused) {
                     return; // Nicht laden wenn pausiert
@@ -899,7 +968,7 @@
                 }
                 
                 var password = getQueryParam('password');
-                var url = '/api/random-image';
+                var url = '/api/next-image';
                 var hasQuery = false;
                 if (password) {
                     url += '?password=' + encodeURIComponent(password);
@@ -910,6 +979,15 @@
                 if (selectedAlbums.length > 0) {
                     url += (hasQuery ? '&' : '?') + 'albums=' + selectedAlbums.join(',');
                     hasQuery = true;
+                }
+
+                // Füge Reihenfolge-Parameter hinzu
+                url += (hasQuery ? '&' : '?') + 'order=' + photoOrder;
+                hasQuery = true;
+
+                // Füge Index für sequentiellen Modus hinzu
+                if (photoOrder === 'sequential') {
+                    url += '&index=' + sequentialIndex;
                 }
                 
                 // Füge Immich-Parameter hinzu (URL + API-Key)
@@ -923,6 +1001,10 @@
                             try {
                                 var data = JSON.parse(xhr.responseText);
                                 if (data.id && data.url) {
+                                    // Speichere neuen Index für sequentiellen Modus
+                                    if (typeof data.next_index !== 'undefined') {
+                                        sequentialIndex = data.next_index;
+                                    }
                                     displayImage(data.id, data.url, data.date, data.album, data.location, showLoading);
                                 } else {
                                     showError('Ungültige Bilddaten erhalten');

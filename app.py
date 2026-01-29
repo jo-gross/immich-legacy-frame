@@ -202,8 +202,9 @@ def get_albums():
 
 
 @app.route('/api/random-image')
-def get_random_image():
-    """Gibt ein zufälliges Bild zurück, optional gefiltert nach Alben"""
+@app.route('/api/next-image')
+def get_next_image():
+    """Gibt das nächste Bild zurück, entweder zufällig oder sequentiell"""
     if not check_password():
         return jsonify({'error': 'Unauthorized'}), 401
     
@@ -211,6 +212,10 @@ def get_random_image():
     
     # Stelle sicher, dass Cache geladen ist
     ensure_cache_loaded(immich_url, immich_api_key)
+    
+    # Hole Parameter
+    order = request.args.get('order', 'random')  # 'random' oder 'sequential'
+    current_index = int(request.args.get('index', 0))
     
     # Hole ausgewählte Alben aus Query-Parameter
     selected_albums = request.args.get('albums', '')
@@ -220,8 +225,8 @@ def get_random_image():
         # Standard: Alle Alben
         selected_album_ids = [album['id'] for album in albums_cache]
     
-    # Sammle Asset IDs aus ausgewählten Alben mit Album-Zuordnung
-    available_assets = []  # Liste von {'id': asset_id, 'album_id': album_id, 'album_name': album_name}
+    # Sammle Assets aus ausgewählten Alben mit Album-Zuordnung und Datum
+    available_assets = []
     asset_ids_seen = set()
     headers = {
         'x-api-key': immich_api_key
@@ -243,9 +248,12 @@ def get_random_image():
                 album_assets = album_detail.get('assets', album_detail.get('assetIds', []))
                 for asset in album_assets:
                     asset_id = None
+                    asset_date = None
                     if isinstance(asset, dict):
                         asset_id = asset.get('id')
                         asset_type = asset.get('type') or asset.get('mimeType', '')
+                        # Hole Datum für Sortierung
+                        asset_date = asset.get('fileCreatedAt') or asset.get('createdAt')
                     elif isinstance(asset, str):
                         asset_id = asset
                         asset_type = None
@@ -263,7 +271,8 @@ def get_random_image():
                             available_assets.append({
                                 'id': asset_id,
                                 'album_id': album_id,
-                                'album_name': album_name
+                                'album_name': album_name,
+                                'date': asset_date
                             })
                             asset_ids_seen.add(asset_id)
         except Exception:
@@ -272,17 +281,31 @@ def get_random_image():
     if not available_assets:
         return jsonify({'error': 'No images available in selected albums'}), 404
     
-    # Wähle zufälliges Asset
-    random_asset = random.choice(available_assets)
-    random_asset_id = random_asset['id']
-    album_name = random_asset['album_name']
+    # Wähle Asset basierend auf Reihenfolge
+    next_index = 0
+    if order == 'sequential':
+        # Sortiere nach Album-Name, dann nach Datum (alt nach neu)
+        available_assets.sort(key=lambda x: (x['album_name'].lower(), x['date'] or ''))
+        
+        # Verwende aktuellen Index, wrap around wenn am Ende
+        if current_index >= len(available_assets):
+            current_index = 0
+        
+        selected_asset = available_assets[current_index]
+        next_index = (current_index + 1) % len(available_assets)
+    else:
+        # Zufällige Auswahl
+        selected_asset = random.choice(available_assets)
+    
+    selected_asset_id = selected_asset['id']
+    album_name = selected_asset['album_name']
     
     # Hole Asset-Details für Datum und Location
     date_taken = None
     location = None
     try:
         asset_response = requests.get(
-            f'{immich_url}/api/assets/{random_asset_id}',
+            f'{immich_url}/api/assets/{selected_asset_id}',
             headers=headers,
             timeout=10
         )
@@ -311,15 +334,23 @@ def get_random_image():
         pass
     
     # Erstelle URLs
-    image_url = f"{immich_url}/api/assets/{random_asset_id}/thumbnail?size=preview"
+    image_url = f"{immich_url}/api/assets/{selected_asset_id}/thumbnail?size=preview"
     
-    return jsonify({
-        'id': random_asset_id,
+    response_data = {
+        'id': selected_asset_id,
         'url': image_url,
         'date': date_taken,
         'album': album_name,
         'location': location
-    })
+    }
+    
+    # Füge next_index für sequentiellen Modus hinzu
+    if order == 'sequential':
+        response_data['next_index'] = next_index
+        response_data['total'] = len(available_assets)
+        response_data['current'] = current_index + 1
+    
+    return jsonify(response_data)
 
 
 @app.route('/api/images')
