@@ -326,6 +326,62 @@
         .album-action-btn:hover {
             background-color: rgba(255, 255, 255, 0.3);
         }
+
+        #album-search-container {
+            margin-bottom: 10px;
+        }
+
+        #album-search {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            font-size: 14px;
+        }
+
+        #album-search:focus {
+            outline: none;
+            border-color: rgba(255, 255, 255, 0.6);
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        #album-search::placeholder {
+            color: rgba(255, 255, 255, 0.5);
+        }
+
+        #album-sort-container {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 10px;
+        }
+
+        .album-sort-btn {
+            flex: 1;
+            background-color: rgba(255, 255, 255, 0.1);
+            color: #fff;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            padding: 6px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+
+        .album-sort-btn:hover {
+            background-color: rgba(255, 255, 255, 0.2);
+        }
+
+        .album-sort-btn.active {
+            background-color: rgba(255, 255, 255, 0.3);
+            border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        #album-count {
+            color: rgba(255, 255, 255, 0.7);
+            font-size: 12px;
+            margin-bottom: 8px;
+        }
         
         #pause-overlay {
             position: fixed;
@@ -356,10 +412,18 @@
             <span>Alben auswählen</span>
             <button id="album-close" title="Schließen">×</button>
         </h3>
-        <div id="album-actions">
-            <button class="album-action-btn" id="select-all-albums">Alle auswählen</button>
-            <button class="album-action-btn" id="deselect-all-albums">Keins auswählen</button>
+        <div id="album-search-container">
+            <input type="text" id="album-search" placeholder="Album suchen...">
         </div>
+        <div id="album-sort-container">
+            <button class="album-sort-btn active" id="sort-alpha-asc" title="A-Z">A-Z</button>
+            <button class="album-sort-btn" id="sort-alpha-desc" title="Z-A">Z-A</button>
+        </div>
+        <div id="album-actions">
+            <button class="album-action-btn" id="select-all-albums">Alle</button>
+            <button class="album-action-btn" id="deselect-all-albums">Keine</button>
+        </div>
+        <div id="album-count"></div>
         <div id="album-list"></div>
     </div>
     
@@ -379,6 +443,10 @@
         <div class="overlay-item">
             <input type="checkbox" id="show-album-name" checked>
             <label for="show-album-name">Album anzeigen</label>
+        </div>
+        <div class="overlay-item">
+            <input type="checkbox" id="show-location" checked>
+            <label for="show-location">Ort anzeigen</label>
         </div>
         <div class="overlay-item interval-setting">
             <label for="interval-input">Intervall (Sek.):</label>
@@ -415,9 +483,12 @@
             var showPhotoDate = true;
             var showCurrentTime = true;
             var showAlbumName = true;
+            var showLocation = true;
             var currentAlbumName = '';
             var currentLocation = '';
             var currentPhotoDate = '';
+            var albumSortOrder = 'asc'; // 'asc' oder 'desc'
+            var albumSearchTerm = '';
 
             // Hole Passwort aus URL falls vorhanden (altbrowser-kompatibel)
             function getQueryParam(name) {
@@ -452,6 +523,8 @@
                         try {
                             var data = JSON.parse(xhr.responseText);
                             albums = data.albums || [];
+                            // Initialisiere Auswahl mit allen Alben
+                            initializeSelectedAlbums();
                             renderAlbumSelector();
                         } catch (e) {
                             console.error('Error loading albums:', e);
@@ -461,23 +534,70 @@
                 xhr.send();
             }
             
+            // Sortiere Alben
+            function sortAlbums(albumsToSort, order) {
+                var sorted = albumsToSort.slice(); // Kopie erstellen
+                sorted.sort(function(a, b) {
+                    var nameA = (a.name || 'Unbenannt').toLowerCase();
+                    var nameB = (b.name || 'Unbenannt').toLowerCase();
+                    if (nameA < nameB) return order === 'asc' ? -1 : 1;
+                    if (nameA > nameB) return order === 'asc' ? 1 : -1;
+                    return 0;
+                });
+                return sorted;
+            }
+
+            // Filtere Alben nach Suchbegriff
+            function filterAlbums(albumsToFilter, searchTerm) {
+                if (!searchTerm) return albumsToFilter;
+                var term = searchTerm.toLowerCase();
+                return albumsToFilter.filter(function(album) {
+                    var name = (album.name || 'Unbenannt').toLowerCase();
+                    return name.indexOf(term) !== -1;
+                });
+            }
+
+            // Initialisiere selectedAlbums mit allen Album-IDs
+            function initializeSelectedAlbums() {
+                selectedAlbums = [];
+                for (var i = 0; i < albums.length; i++) {
+                    selectedAlbums.push(albums[i].id);
+                }
+            }
+
             // Rendere Album-Auswahl
             function renderAlbumSelector() {
                 var albumList = document.getElementById('album-list');
+                var albumCount = document.getElementById('album-count');
                 albumList.innerHTML = '';
                 
-                for (var i = 0; i < albums.length; i++) {
-                    var album = albums[i];
+                // Filtere und sortiere
+                var filteredAlbums = filterAlbums(albums, albumSearchTerm);
+                var sortedAlbums = sortAlbums(filteredAlbums, albumSortOrder);
+                
+                // Zähle ausgewählte Alben
+                var selectedCount = selectedAlbums.length;
+                
+                // Zeige Anzahl
+                if (albumSearchTerm) {
+                    albumCount.textContent = sortedAlbums.length + ' von ' + albums.length + ' Alben (' + selectedCount + ' ausgewählt)';
+                } else {
+                    albumCount.textContent = albums.length + ' Alben (' + selectedCount + ' ausgewählt)';
+                }
+                
+                for (var i = 0; i < sortedAlbums.length; i++) {
+                    var album = sortedAlbums[i];
                     var item = document.createElement('div');
                     item.className = 'album-item';
                     
                     var checkbox = document.createElement('input');
                     checkbox.type = 'checkbox';
                     checkbox.id = 'album-' + album.id;
-                    checkbox.checked = true; // Standard: alle ausgewählt
+                    // Prüfe ob dieses Album in selectedAlbums ist
+                    checkbox.checked = selectedAlbums.indexOf(album.id) !== -1;
                     checkbox.onchange = function(albumId) {
                         return function() {
-                            updateSelectedAlbums();
+                            toggleAlbumSelection(albumId);
                         };
                     }(album.id);
                     
@@ -491,39 +611,79 @@
                 }
             }
             
-            // Aktualisiere ausgewählte Alben
-            function updateSelectedAlbums() {
-                selectedAlbums = [];
-                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
-                for (var i = 0; i < checkboxes.length; i++) {
-                    if (checkboxes[i].checked) {
-                        var albumId = checkboxes[i].id.replace('album-', '');
-                        selectedAlbums.push(albumId);
-                    }
+            // Toggle einzelnes Album in der Auswahl
+            function toggleAlbumSelection(albumId) {
+                var index = selectedAlbums.indexOf(albumId);
+                if (index === -1) {
+                    // Album hinzufügen
+                    selectedAlbums.push(albumId);
+                } else {
+                    // Album entfernen
+                    selectedAlbums.splice(index, 1);
                 }
+                // Aktualisiere Anzeige
+                renderAlbumSelector();
                 // Lade neues Bild mit neuen Filtern
                 if (currentImage) {
                     loadRandomImage(false);
                 }
             }
             
-            // Alle Alben auswählen
+            // Alle sichtbaren Alben auswählen
             function selectAllAlbums() {
-                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
-                for (var i = 0; i < checkboxes.length; i++) {
-                    checkboxes[i].checked = true;
+                var filteredAlbums = filterAlbums(albums, albumSearchTerm);
+                for (var i = 0; i < filteredAlbums.length; i++) {
+                    var albumId = filteredAlbums[i].id;
+                    if (selectedAlbums.indexOf(albumId) === -1) {
+                        selectedAlbums.push(albumId);
+                    }
                 }
-                updateSelectedAlbums();
+                renderAlbumSelector();
+                if (currentImage) {
+                    loadRandomImage(false);
+                }
             }
             
-            // Alle Alben deselektieren
+            // Alle sichtbaren Alben deselektieren
             function deselectAllAlbums() {
-                var checkboxes = document.querySelectorAll('#album-list input[type="checkbox"]');
-                for (var i = 0; i < checkboxes.length; i++) {
-                    checkboxes[i].checked = false;
+                var filteredAlbums = filterAlbums(albums, albumSearchTerm);
+                for (var i = 0; i < filteredAlbums.length; i++) {
+                    var albumId = filteredAlbums[i].id;
+                    var index = selectedAlbums.indexOf(albumId);
+                    if (index !== -1) {
+                        selectedAlbums.splice(index, 1);
+                    }
                 }
-                updateSelectedAlbums();
+                renderAlbumSelector();
+                if (currentImage) {
+                    loadRandomImage(false);
+                }
             }
+
+            // Album-Suche
+            var albumSearchInput = document.getElementById('album-search');
+            albumSearchInput.oninput = function() {
+                albumSearchTerm = albumSearchInput.value;
+                renderAlbumSelector();
+            };
+
+            // Sortier-Buttons
+            var sortAlphaAsc = document.getElementById('sort-alpha-asc');
+            var sortAlphaDesc = document.getElementById('sort-alpha-desc');
+
+            sortAlphaAsc.onclick = function() {
+                albumSortOrder = 'asc';
+                sortAlphaAsc.className = 'album-sort-btn active';
+                sortAlphaDesc.className = 'album-sort-btn';
+                renderAlbumSelector();
+            };
+
+            sortAlphaDesc.onclick = function() {
+                albumSortOrder = 'desc';
+                sortAlphaAsc.className = 'album-sort-btn';
+                sortAlphaDesc.className = 'album-sort-btn active';
+                renderAlbumSelector();
+            };
             
             // Toggle Album-Auswahl
             albumToggle.onclick = function() {
@@ -561,6 +721,7 @@
             var showPhotoDateCheckbox = document.getElementById('show-photo-date');
             var showCurrentTimeCheckbox = document.getElementById('show-current-time');
             var showAlbumNameCheckbox = document.getElementById('show-album-name');
+            var showLocationCheckbox = document.getElementById('show-location');
 
             // Aktualisiere Datum-Overlay basierend auf aktuellen Einstellungen
             function updateDateOverlay() {
@@ -568,7 +729,7 @@
                 var formattedDate = formatDate(currentPhotoDate);
                 var hasDate = formattedDate && showPhotoDate;
                 var hasAlbum = currentAlbumName && showAlbumName;
-                var hasLocation = currentLocation && showAlbumName; // Zeige Location nur wenn Album angezeigt wird
+                var hasLocation = currentLocation && showLocation;
 
                 if (hasDate || hasAlbum || hasLocation) {
                     var overlayContent = '';
@@ -604,6 +765,11 @@
 
             showAlbumNameCheckbox.onchange = function() {
                 showAlbumName = showAlbumNameCheckbox.checked;
+                updateDateOverlay();
+            };
+
+            showLocationCheckbox.onchange = function() {
+                showLocation = showLocationCheckbox.checked;
                 updateDateOverlay();
             };
 
