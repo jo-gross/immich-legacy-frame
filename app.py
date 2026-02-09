@@ -16,6 +16,8 @@ PASSWORD = os.getenv('PASSWORD', '')
 asset_ids_cache = []
 albums_cache = []
 cache_loaded = False
+cache_immich_url = None
+cache_immich_api_key = None
 
 
 def get_immich_config():
@@ -36,7 +38,7 @@ def check_password():
 
 def load_asset_ids(immich_url=None, immich_api_key=None):
     """Lädt alle Asset IDs von Immich und cached sie mit Album-Zuordnung"""
-    global asset_ids_cache, albums_cache, cache_loaded
+    global asset_ids_cache, albums_cache, cache_loaded, cache_immich_url, cache_immich_api_key
     
     # Verwende übergebene Parameter oder Defaults
     if immich_url is None:
@@ -44,7 +46,8 @@ def load_asset_ids(immich_url=None, immich_api_key=None):
     if immich_api_key is None:
         immich_api_key = DEFAULT_IMMICH_API_KEY
     
-    if cache_loaded:
+    # Wenn Cache bereits für genau diese Konfiguration geladen wurde, wiederverwenden
+    if cache_loaded and cache_immich_url == immich_url and cache_immich_api_key == immich_api_key:
         return asset_ids_cache
     
     if not immich_url or not immich_api_key:
@@ -62,22 +65,59 @@ def load_asset_ids(immich_url=None, immich_api_key=None):
     albums_list = []
     
     try:
-        # Schritt 1: Lade alle Alben
-        app.logger.info(f'Loading asset IDs from Immich: {immich_url}/api/albums')
-        albums_response = requests.get(
-            f'{immich_url}/api/albums',
-            headers=headers,
-            timeout=30
-        )
-        
-        if albums_response.status_code != 200:
-            app.logger.error(f'Failed to load albums: {albums_response.status_code}')
+        # Schritt 1: Lade alle Alben – zuerst eigene, dann geteilte und zusammenführen
+        app.logger.info(f'Loading asset IDs from Immich: {immich_url}/api/albums (owned + shared)')
+        albums = []
+        album_ids_seen = set()
+
+        # 1) Eigene Alben (ohne Parameter)
+        try:
+            owned_response = requests.get(
+                f'{immich_url}/api/albums',
+                headers=headers,
+                timeout=30
+            )
+            if owned_response.status_code == 200:
+                owned_data = owned_response.json()
+                owned_albums = owned_data if isinstance(owned_data, list) else owned_data.get('items', owned_data.get('albums', []))
+                for album in owned_albums:
+                    album_id = album.get('id')
+                    if not album_id or album_id in album_ids_seen:
+                        continue
+                    albums.append(album)
+                    album_ids_seen.add(album_id)
+            else:
+                app.logger.error(f'Failed to load owned albums: {owned_response.status_code}')
+        except requests.exceptions.RequestException as e:
+            app.logger.error(f'Error loading owned albums: {str(e)}')
+
+        # 2) Geteilte Alben (shared = true)
+        try:
+            shared_response = requests.get(
+                f'{immich_url}/api/albums',
+                headers=headers,
+                params={'shared': 'true'},
+                timeout=30
+            )
+            if shared_response.status_code == 200:
+                shared_data = shared_response.json()
+                shared_albums = shared_data if isinstance(shared_data, list) else shared_data.get('items', shared_data.get('albums', []))
+                for album in shared_albums:
+                    album_id = album.get('id')
+                    if not album_id or album_id in album_ids_seen:
+                        continue
+                    albums.append(album)
+                    album_ids_seen.add(album_id)
+            else:
+                app.logger.error(f'Failed to load shared albums: {shared_response.status_code}')
+        except requests.exceptions.RequestException as e:
+            app.logger.error(f'Error loading shared albums: {str(e)}')
+
+        if not albums:
+            app.logger.error('No albums found (owned or shared)')
             return []
-        
-        albums_data = albums_response.json()
-        albums = albums_data if isinstance(albums_data, list) else albums_data.get('items', albums_data.get('albums', []))
-        
-        app.logger.info(f'Found {len(albums)} albums')
+
+        app.logger.info(f'Found {len(albums)} albums (owned + shared)')
         
         # Schritt 2: Lade Assets aus jedem Album
         for album in albums:
@@ -140,11 +180,15 @@ def load_asset_ids(immich_url=None, immich_api_key=None):
             except requests.exceptions.RequestException:
                 continue
             
+            # Merke Asset-IDs pro Album (derzeit nicht weiter genutzt, aber vollständig)
             assets_by_album[album_id] = album_asset_ids
         
+        # Cache aktualisieren: Daten und zugehörige Konfiguration merken
         asset_ids_cache = all_asset_ids
         albums_cache = albums_list
         cache_loaded = True
+        cache_immich_url = immich_url
+        cache_immich_api_key = immich_api_key
         app.logger.info(f'Loaded {len(asset_ids_cache)} image asset IDs from {len(albums_list)} albums into cache')
         
     except Exception as e:
@@ -375,30 +419,74 @@ def get_images():
         asset_ids_seen = set()  # Um Duplikate zu vermeiden
         
         try:
-            # Schritt 1: Lade alle Alben
-            app.logger.info(f'Fetching albums from Immich: {immich_url}/api/albums')
-            albums_response = requests.get(
-                f'{immich_url}/api/albums',
-                headers=headers,
-                timeout=10
-            )
-            
-            if albums_response.status_code != 200:
-                error_msg = f'{immich_url}/api/albums returned {albums_response.status_code}'
-                try:
-                    error_data = albums_response.json()
-                    if isinstance(error_data, dict) and 'message' in error_data:
-                        error_msg += f" - {error_data['message']}"
-                except Exception:
-                    error_msg += f" - {albums_response.text[:200]}"
-                
-                app.logger.error(f'Immich API error: {immich_url}/api/albums - {error_msg}')
+            # Schritt 1: Lade alle Alben – zuerst eigene, dann geteilte und zusammenführen
+            app.logger.info(f'Fetching albums from Immich: {immich_url}/api/albums (owned + shared)')
+            albums = []
+            album_ids_seen = set()
+
+            # 1) Eigene Alben (ohne Parameter)
+            try:
+                owned_response = requests.get(
+                    f'{immich_url}/api/albums',
+                    headers=headers,
+                    timeout=10
+                )
+                if owned_response.status_code == 200:
+                    owned_data = owned_response.json()
+                    owned_albums = owned_data if isinstance(owned_data, list) else owned_data.get('items', owned_data.get('albums', []))
+                    for album in owned_albums:
+                        album_id = album.get('id')
+                        if not album_id or album_id in album_ids_seen:
+                            continue
+                        albums.append(album)
+                        album_ids_seen.add(album_id)
+                else:
+                    error_msg = f'{immich_url}/api/albums returned {owned_response.status_code}'
+                    try:
+                        error_data = owned_response.json()
+                        if isinstance(error_data, dict) and 'message' in error_data:
+                            error_msg += f" - {error_data['message']}"
+                    except Exception:
+                        error_msg += f" - {owned_response.text[:200]}"
+                    app.logger.error(f'Immich API error (owned): {immich_url}/api/albums - {error_msg}')
+            except requests.exceptions.RequestException as e:
+                app.logger.error(f'Failed to connect to Immich API for owned albums: {str(e)}')
+
+            # 2) Geteilte Alben (shared = true)
+            try:
+                shared_response = requests.get(
+                    f'{immich_url}/api/albums',
+                    headers=headers,
+                    params={'shared': 'true'},
+                    timeout=10
+                )
+                if shared_response.status_code == 200:
+                    shared_data = shared_response.json()
+                    shared_albums = shared_data if isinstance(shared_data, list) else shared_data.get('items', shared_data.get('albums', []))
+                    for album in shared_albums:
+                        album_id = album.get('id')
+                        if not album_id or album_id in album_ids_seen:
+                            continue
+                        albums.append(album)
+                        album_ids_seen.add(album_id)
+                else:
+                    error_msg = f'{immich_url}/api/albums?shared=true returned {shared_response.status_code}'
+                    try:
+                        error_data = shared_response.json()
+                        if isinstance(error_data, dict) and 'message' in error_data:
+                            error_msg += f" - {error_data['message']}"
+                    except Exception:
+                        error_msg += f" - {shared_response.text[:200]}"
+                    app.logger.error(f'Immich API error (shared): {immich_url}/api/albums - {error_msg}')
+            except requests.exceptions.RequestException as e:
+                app.logger.error(f'Failed to connect to Immich API for shared albums: {str(e)}')
+
+            if not albums:
+                error_msg = 'No albums found (owned or shared)'
+                app.logger.error(error_msg)
                 return jsonify({'error': error_msg}), 500
-            
-            albums_data = albums_response.json()
-            albums = albums_data if isinstance(albums_data, list) else albums_data.get('items', albums_data.get('albums', []))
-            
-            app.logger.info(f'Found {len(albums)} albums')
+
+            app.logger.info(f'Found {len(albums)} albums (owned + shared)')
             
             # Schritt 2: Lade Assets aus jedem Album
             # Das Album-Objekt enthält bereits die Assets, oder wir müssen das Album-Detail abrufen
@@ -631,15 +719,17 @@ def get_image(image_id):
 
 # Lade Asset IDs beim ersten Request (lazy loading)
 def ensure_cache_loaded(immich_url=None, immich_api_key=None):
-    """Stellt sicher, dass der Cache geladen ist"""
+    """Stellt sicher, dass der Cache für die aktuelle Immich-Konfiguration geladen ist"""
     # Verwende übergebene Parameter oder Defaults
     if immich_url is None:
         immich_url = DEFAULT_IMMICH_URL
     if immich_api_key is None:
         immich_api_key = DEFAULT_IMMICH_API_KEY
     
-    if not cache_loaded and immich_url and immich_api_key:
-        app.logger.info('Loading asset cache on first request...')
+    # Nur laden, wenn Konfiguration vorhanden ist; die eigentliche Cache-Logik
+    # (inkl. Wiederverwendung bei gleicher Konfiguration) steckt in load_asset_ids.
+    if immich_url and immich_api_key:
+        app.logger.info('Ensuring asset cache is loaded for current Immich configuration...')
         load_asset_ids(immich_url, immich_api_key)
 
 
