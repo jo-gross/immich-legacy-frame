@@ -1,9 +1,12 @@
 import os
 import random
 import requests
+from dotenv import load_dotenv
 from flask import Flask, render_template, request, jsonify, send_file
 from io import BytesIO
 from PIL import Image
+
+load_dotenv()
 
 app = Flask(__name__)
 
@@ -36,6 +39,92 @@ def check_password():
     return provided_password == PASSWORD
 
 
+def get_immich_headers(immich_api_key):
+    return {'x-api-key': immich_api_key}
+
+
+def search_album_assets(immich_url, immich_api_key, album_id):
+    """Lädt alle Assets eines Albums über die Immich v3 Metadata-Suche"""
+    headers = get_immich_headers(immich_api_key)
+    all_assets = []
+    next_page = None
+
+    while True:
+        body = {'albumIds': [album_id], 'size': 1000}
+        if next_page:
+            body['page'] = next_page
+
+        try:
+            response = requests.post(
+                f'{immich_url}/api/search/metadata',
+                headers=headers,
+                json=body,
+                timeout=30
+            )
+            if response.status_code != 200:
+                break
+
+            assets_data = response.json().get('assets', {})
+            items = assets_data.get('items', [])
+            all_assets.extend(items)
+
+            next_page = assets_data.get('nextPage')
+            if not next_page:
+                break
+        except requests.exceptions.RequestException:
+            break
+
+    return all_assets
+
+
+def get_album_assets(immich_url, immich_api_key, album_id, album=None):
+    """Lädt Assets eines Albums (Immich v2: aus Album-Objekt, v3: via search/metadata)"""
+    headers = get_immich_headers(immich_api_key)
+
+    if album is not None:
+        album_assets = album.get('assets')
+        if isinstance(album_assets, list) and album_assets:
+            return album_assets
+
+    try:
+        album_detail_response = requests.get(
+            f'{immich_url}/api/albums/{album_id}',
+            headers=headers,
+            timeout=10
+        )
+        if album_detail_response.status_code == 200:
+            album_detail = album_detail_response.json()
+            album_assets = album_detail.get('assets')
+            if isinstance(album_assets, list) and album_assets:
+                return album_assets
+    except requests.exceptions.RequestException:
+        pass
+
+    return search_album_assets(immich_url, immich_api_key, album_id)
+
+
+def is_image_asset(asset):
+    """Prüft ob ein Asset ein Bild ist"""
+    if isinstance(asset, dict):
+        asset_type = asset.get('type') or asset.get('mimeType', '') or asset.get('originalMimeType', '')
+    else:
+        return True
+
+    if asset_type == 'IMAGE':
+        return True
+    if isinstance(asset_type, str) and asset_type.startswith('image/'):
+        return True
+    return not asset_type
+
+
+def extract_asset_id(asset):
+    if isinstance(asset, dict):
+        return asset.get('id')
+    if isinstance(asset, str):
+        return asset
+    return None
+
+
 def load_asset_ids(immich_url=None, immich_api_key=None):
     """Lädt alle Asset IDs von Immich und cached sie mit Album-Zuordnung"""
     global asset_ids_cache, albums_cache, cache_loaded, cache_immich_url, cache_immich_api_key
@@ -54,11 +143,7 @@ def load_asset_ids(immich_url=None, immich_api_key=None):
         app.logger.error('Immich configuration missing, cannot load assets')
         return []
     
-    headers = {
-        'x-api-key': immich_api_key
-    }
-    
-    # Dictionary: album_id -> [asset_ids]
+    headers = get_immich_headers(immich_api_key)
     assets_by_album = {}
     all_asset_ids = []
     asset_ids_seen = set()
@@ -134,48 +219,16 @@ def load_asset_ids(immich_url=None, immich_api_key=None):
             album_asset_ids = []
             
             try:
-                # Versuche zuerst, ob das Album-Objekt bereits Assets enthält
-                album_assets = album.get('assets', [])
-                
-                # Falls nicht, hole das Album-Detail
+                album_assets = get_album_assets(immich_url, immich_api_key, album_id, album=album)
                 if not album_assets:
-                    album_detail_response = requests.get(
-                        f'{immich_url}/api/albums/{album_id}',
-                        headers=headers,
-                        timeout=10
-                    )
-                    
-                    if album_detail_response.status_code == 200:
-                        album_detail = album_detail_response.json()
-                        album_assets = album_detail.get('assets', album_detail.get('assetIds', []))
-                    else:
-                        continue
-                
-                # Extrahiere Asset IDs
+                    continue
+
                 for asset in album_assets:
-                    asset_id = None
-                    if isinstance(asset, dict):
-                        asset_id = asset.get('id')
-                        asset_type = asset.get('type') or asset.get('mimeType', '')
-                    elif isinstance(asset, str):
-                        asset_id = asset
-                        asset_type = None
-                    
-                    # Nur Bilder hinzufügen
-                    if asset_id and asset_id not in asset_ids_seen:
-                        # Prüfe ob es ein Bild ist
-                        is_image = False
-                        if asset_type == 'IMAGE':
-                            is_image = True
-                        elif isinstance(asset_type, str) and asset_type.startswith('image/'):
-                            is_image = True
-                        elif not asset_type:  # Wenn kein Typ, versuche es als Bild
-                            is_image = True
-                        
-                        if is_image:
-                            all_asset_ids.append(asset_id)
-                            album_asset_ids.append(asset_id)
-                            asset_ids_seen.add(asset_id)
+                    asset_id = extract_asset_id(asset)
+                    if asset_id and asset_id not in asset_ids_seen and is_image_asset(asset):
+                        all_asset_ids.append(asset_id)
+                        album_asset_ids.append(asset_id)
+                        asset_ids_seen.add(asset_id)
                             
             except requests.exceptions.RequestException:
                 continue
@@ -272,9 +325,7 @@ def get_next_image():
     # Sammle Assets aus ausgewählten Alben mit Album-Zuordnung und Datum
     available_assets = []
     asset_ids_seen = set()
-    headers = {
-        'x-api-key': immich_api_key
-    }
+    headers = get_immich_headers(immich_api_key)
     
     # Erstelle Album-ID zu Name Mapping
     album_id_to_name = {album['id']: album['name'] for album in albums_cache}
@@ -282,43 +333,23 @@ def get_next_image():
     for album_id in selected_album_ids:
         album_name = album_id_to_name.get(album_id, 'Unbenannt')
         try:
-            album_detail_response = requests.get(
-                f'{immich_url}/api/albums/{album_id}',
-                headers=headers,
-                timeout=10
-            )
-            if album_detail_response.status_code == 200:
-                album_detail = album_detail_response.json()
-                album_assets = album_detail.get('assets', album_detail.get('assetIds', []))
-                for asset in album_assets:
-                    asset_id = None
-                    asset_date = None
-                    if isinstance(asset, dict):
-                        asset_id = asset.get('id')
-                        asset_type = asset.get('type') or asset.get('mimeType', '')
-                        # Hole Datum für Sortierung
-                        asset_date = asset.get('fileCreatedAt') or asset.get('createdAt')
-                    elif isinstance(asset, str):
-                        asset_id = asset
-                        asset_type = None
-                    
-                    if asset_id:
-                        is_image = False
-                        if asset_type == 'IMAGE':
-                            is_image = True
-                        elif isinstance(asset_type, str) and asset_type.startswith('image/'):
-                            is_image = True
-                        elif not asset_type:
-                            is_image = True
-                        
-                        if is_image and asset_id not in asset_ids_seen:
-                            available_assets.append({
-                                'id': asset_id,
-                                'album_id': album_id,
-                                'album_name': album_name,
-                                'date': asset_date
-                            })
-                            asset_ids_seen.add(asset_id)
+            album_assets = get_album_assets(immich_url, immich_api_key, album_id)
+            for asset in album_assets:
+                asset_id = extract_asset_id(asset)
+                if not asset_id or not is_image_asset(asset) or asset_id in asset_ids_seen:
+                    continue
+
+                asset_date = None
+                if isinstance(asset, dict):
+                    asset_date = asset.get('fileCreatedAt') or asset.get('createdAt')
+
+                available_assets.append({
+                    'id': asset_id,
+                    'album_id': album_id,
+                    'album_name': album_name,
+                    'date': asset_date
+                })
+                asset_ids_seen.add(asset_id)
         except Exception:
             continue
     
@@ -497,35 +528,17 @@ def get_images():
                 
                 try:
                     app.logger.info(f'Fetching album details for {album_id}')
-                    
-                    # Versuche zuerst, ob das Album-Objekt bereits Assets enthält
-                    album_assets = album.get('assets', [])
-                    
-                    # Falls nicht, hole das Album-Detail
+                    album_assets = get_album_assets(immich_url, immich_api_key, album_id, album=album)
                     if not album_assets:
-                        album_detail_response = requests.get(
-                            f'{immich_url}/api/albums/{album_id}',
-                            headers=headers,
-                            timeout=10
-                        )
-                        
-                        if album_detail_response.status_code == 200:
-                            album_detail = album_detail_response.json()
-                            album_assets = album_detail.get('assets', album_detail.get('assetIds', []))
-                        else:
-                            app.logger.warning(f'Failed to fetch album detail {album_id}: {album_detail_response.status_code}')
-                            continue
-                    
-                    # Füge Assets hinzu, wenn sie noch nicht vorhanden sind
+                        continue
+
                     for asset in album_assets:
-                        # Asset könnte ein Objekt oder nur eine ID sein
                         if isinstance(asset, dict):
                             asset_id = asset.get('id')
                             if asset_id and asset_id not in asset_ids_seen:
                                 all_assets.append(asset)
                                 asset_ids_seen.add(asset_id)
                         elif isinstance(asset, str):
-                            # Wenn es nur eine ID ist, müssen wir das Asset separat laden
                             if asset not in asset_ids_seen:
                                 try:
                                     asset_detail_response = requests.get(
@@ -555,21 +568,8 @@ def get_images():
         # Extrahiere Bild-URLs
         images = []
         for asset in all_assets:
-            # Prüfe verschiedene mögliche Typ-Felder
-            asset_type = asset.get('type') or asset.get('mimeType', '') or asset.get('exifInfo', {}).get('mimeType', '')
-            asset_id = asset.get('id')
-            
-            # Akzeptiere IMAGE oder wenn mimeType mit 'image/' beginnt
-            is_image = False
-            if asset_type == 'IMAGE':
-                is_image = True
-            elif isinstance(asset_type, str) and asset_type.startswith('image/'):
-                is_image = True
-            # Fallback: Wenn kein Typ gesetzt ist, aber es ein Asset ist, versuche es als Bild
-            elif not asset_type and asset_id:
-                is_image = True
-            
-            if is_image and asset_id:
+            asset_id = asset.get('id') if isinstance(asset, dict) else None
+            if is_image_asset(asset) and asset_id:
                 # Verwende korrekte Immich API-Endpunkte
                 # GET /api/assets/{id}/thumbnail - für Thumbnails (singular "asset")
                 # GET /api/assets/{id}/thumbnail?size=preview& - für Konvertierte Bilder (singular "asset")
