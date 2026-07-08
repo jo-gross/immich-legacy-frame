@@ -10,5 +10,5 @@ dependencies = [
     "gunicorn==26.0.0",
     "pillow==12.3.0",
     "pillow-heif==1.2.0",
-    "requests==2.33.0",
+    "requests==2.34.2",
 ]
